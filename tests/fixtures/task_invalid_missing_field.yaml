@@ -1,0 +1,20 @@
+task_id: bad-no-objective
+category: bugfix
+source:
+  type: local-folder
+  ref: /tmp/somefolder
+initial_instruction: |
+  做点事。
+# 缺 objective
+input_env:
+  dockerfile: Dockerfile
+  workspace:
+    path: workspace
+rubrics:
+  - id: r1
+    type: script
+    run: rubrics/check.sh
+    interpreter: bash
+    pass_condition: exit_zero
+    pass_value: ""
+    timeout_seconds: 60

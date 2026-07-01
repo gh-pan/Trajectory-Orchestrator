@@ -1,0 +1,19 @@
+task_id: bad-pass-condition
+category: bugfix
+source:
+  type: local-folder
+  ref: /tmp/x
+initial_instruction: x
+objective: x
+input_env:
+  dockerfile: Dockerfile
+  workspace:
+    path: workspace
+rubrics:
+  - id: r1
+    type: script
+    run: rubrics/check.sh
+    interpreter: bash
+    pass_condition: invalid_condition
+    pass_value: ""
+    timeout_seconds: 60

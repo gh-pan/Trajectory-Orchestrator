@@ -1,0 +1,40 @@
+task_id: repo-cleanup-unused-imports
+category: code-refactor
+source:
+  type: github
+  ref: https://github.com/acme/widget
+  commit: abc123def
+
+initial_instruction: |
+  请清理 src/ 下所有 Python 文件中未使用的 import，并移除因此产生的空行。
+objective: |
+  全部 src/*.py 文件中无未使用 import；不改变任何运行逻辑；py_compile 通过。
+
+input_env:
+  dockerfile: Dockerfile
+  workspace:
+    path: workspace
+    init_script: setup.sh
+  base_image: node:22
+
+expected_final_env:
+  description: |
+    src/ 下所有 .py 经 lint 检查无 unused-import；py_compile 全通过；无逻辑改动。
+  reference_patch: |
+    diff --git a/src/app.py b/src/app.py
+
+rubrics:
+  - id: r1
+    type: checklist
+    description: 不存在未使用的 import
+    criterion: "src/**/*.py 中任意文件经 pyflakes 检查无 'unused import' 报错"
+    target_files: ["src/**/*.py"]
+    severity: required
+  - id: r2
+    type: script
+    description: py_compile 全通过
+    run: rubrics/py_compile_check.sh
+    interpreter: bash
+    pass_condition: exit_zero
+    pass_value: ""
+    timeout_seconds: 120
