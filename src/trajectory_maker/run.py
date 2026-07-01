@@ -1,0 +1,122 @@
+"""Stage 3: run a task in docker, record trajectory, grade, package, destroy."""
+
+import json
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+
+from .docker import DockerClient
+from .driver import Driver
+from .grade import grade
+from .models import load_task_spec
+from .orchestrator import detect_termination
+from .package import package_run
+
+
+def _env(endpoint, apikey, model) -> dict[str, str]:
+    env = {}
+    if endpoint: env["ANTHROPIC_BASE_URL"] = endpoint
+    if apikey: env["ANTHROPIC_API_KEY"] = apikey
+    if model: env["ANTHROPIC_MODEL"] = model
+    return env
+
+
+def run(
+    task_dir: Path,
+    endpoint: str,
+    apikey: str,
+    model: str,
+    output: Path = Path("./dataset"),
+    max_turns: int = 1,
+    timeout_seconds: int = 1800,
+    keep: bool = False,
+) -> Path:
+    spec = load_task_spec(task_dir / "task.yaml")
+    docker = DockerClient()
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M") + uuid.uuid4().hex[:4]
+    image_tag = f"tm-run-{spec.task_id}-{run_id}"
+    container = image_tag
+    work_dir = output / "_work" / run_id
+    work_dir.mkdir(parents=True, exist_ok=True)
+    raw_path = work_dir / "trajectory_raw.jsonl"
+    started_at = datetime.now(timezone.utc).isoformat()
+
+    try:
+        docker.build(task_dir, image_tag)
+        docker.run(image_tag, container)
+        # init script
+        if spec.input_env.workspace.init_script:
+            docker.exec(container, ["bash", "-lc", f"cd /workspace && bash {spec.input_env.workspace.init_script}"])
+        # initial env snapshot
+        docker.cp_from(container, "/workspace", str(work_dir / "initial_env"))
+        _layout_snapshot(work_dir / "initial_env")
+
+        env = _env(endpoint, apikey, model)
+        drv = Driver.docker(docker, container, env=env, add_dirs=["/workspace"], model=model)
+        drv.send_user_message(spec.initial_instruction)
+        events = []
+        with raw_path.open("w") as f:
+            for ev in drv.events():
+                events.append(ev)
+                f.write(json.dumps(ev, ensure_ascii=False) + "\n")
+        drv.close()
+
+        # auth error short-circuit: do not package
+        termination = detect_termination(events)
+        if termination == "auth_error":
+            raise RuntimeError("auth error during run; trajectory meaningless, not packaged")
+
+        # actual final env snapshot BEFORE grading
+        docker.cp_from(container, "/workspace", str(work_dir / "actual_final_env"))
+        _layout_snapshot(work_dir / "actual_final_env")
+
+        ended_at = datetime.now(timezone.utc).isoformat()
+        # grade against live container
+        grade_outcome = grade(container, docker, spec, env=env)
+
+        # package
+        results = grade_outcome.results
+        summary = grade_outcome.summary
+        out_dir = package_run(
+            task_spec=spec, run_id=run_id, endpoint=endpoint, model=model,
+            started_at=started_at, ended_at=ended_at, termination=termination,
+            max_turns=max_turns, timeout_seconds=timeout_seconds,
+            claude_version=_claude_version(docker, container), docker_base=spec.input_env.base_image or "",
+            work_dir=work_dir, data_root=output, task_dir=task_dir,
+            rubric_results=results, summary=summary,
+        )
+        return out_dir
+    finally:
+        if not keep:
+            docker.stop(container)
+            docker.rm(container)
+            docker.rmi(image_tag)
+            shutil_rmtree_safe(work_dir)
+
+
+def _layout_snapshot(snap_dir: Path) -> None:
+    """docker cp of /workspace puts contents directly; ensure snap_dir/workspace exists."""
+    # docker cp container:/workspace dest  -> dest gets `workspace` dir
+    # so dest/workspace already exists; nothing to do if so
+    if not (snap_dir / "workspace").exists() and snap_dir.exists():
+        # cp dumped contents into snap_dir itself; wrap them
+        tmp = snap_dir.parent / (snap_dir.name + "_tmp")
+        snap_dir.rename(tmp)
+        snap_dir.mkdir()
+        tmp.rename(snap_dir / "workspace")
+
+
+def _claude_version(docker, container) -> str:
+    try:
+        code, out, _ = docker.exec(container, ["claude", "--version"], timeout=30)
+        return out.strip() if code == 0 else "unknown"
+    except Exception:
+        return "unknown"
+
+
+def shutil_rmtree_safe(path: Path) -> None:
+    import shutil
+    try:
+        shutil.rmtree(path)
+    except Exception:
+        pass
