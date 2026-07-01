@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+build/
+
+# uv
+.python-version
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Project runtime artifacts
+tasks/
+dataset/
+runs/
+_verify_log/
+_judge_log/
+*.raw.jsonl
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/
