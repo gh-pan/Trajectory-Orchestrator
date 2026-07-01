@@ -77,10 +77,14 @@ def _scrub(obj, rules: SanitizeRules):
 
 def sanitize_event(event: dict, rules: SanitizeRules) -> dict:
     out = _scrub(event, rules)
-    # scrub metadata fields on system/result events
+    # scrub metadata fields (session_id, conversation_id, transcript_path, hostname,
+    # machine_id) from EVERY event — claude code attaches session_id to assistant/user
+    # events too, not just system/result.
+    for f in rules.remove_metadata_fields:
+        out.pop(f, None)
+    # normalize metadata fields (e.g. cwd -> /workspace) only on system/result,
+    # which is where they appear.
     if out.get("type") in ("system", "result"):
-        for f in rules.remove_metadata_fields:
-            out.pop(f, None)
         for f, val in rules.normalize_metadata.items():
             if f in out:
                 out[f] = val

@@ -1,12 +1,17 @@
 """Isolated Claude Code subprocess environment — bypasses global cc-switch.
 
-Two layers:
-- meta work (synthesize, checklist judge): pinned to a project-local endpoint
-  read from .claude-config/settings.json or TM_SYNTH_* env vars.
-- subject agent (run stage): uses caller-supplied endpoint/apikey/model, but
-  still isolated from cc-switch via CLAUDE_CONFIG_DIR + ANTHROPIC_* stripping.
+Split by WHERE claude runs, not just by subject/meta:
+- subject agent (run/verify) runs IN CONTAINER → minimal env (only ANTHROPIC_*).
+  Must NOT copy host env: leaking host HOME/PATH into the container breaks claude
+  (claude init writes to ~/.claude; a host HOME that doesn't exist in-container
+  causes a silent early exit with empty stdout).
+- meta work:
+  - synthesize runs on HOST → full host env (stripped of ANTHROPIC_*) + meta creds
+    + CLAUDE_CONFIG_DIR (bypass host ~/.claude/settings.json / cc-switch).
+  - checklist judge runs IN CONTAINER → minimal env (only meta ANTHROPIC_*).
 
-Mirrors docq's build_isolated_claude_env pattern.
+Mirrors docq's build_isolated_claude_env for the host case; the container case is
+intentionally minimal because `docker exec -e` augments the container's own env.
 """
 
 import json
@@ -33,52 +38,67 @@ def _load_settings() -> dict:
         return {}
 
 
-def build_subject_env(
-    endpoint: str,
-    apikey: str,
-    model: str,
-    base_env: dict[str, str] | None = None,
-) -> dict[str, str]:
-    """Env for the subject agent (run stage) — caller-supplied credentials, isolated from cc-switch.
+def _anthropic_vars(endpoint: str, apikey: str, model: str) -> dict[str, str]:
+    return {
+        "ANTHROPIC_BASE_URL": endpoint,
+        "ANTHROPIC_API_KEY": apikey,
+        "ANTHROPIC_AUTH_TOKEN": apikey,
+        "ANTHROPIC_MODEL": model,
+        "ANTHROPIC_DEFAULT_SONNET_MODEL": model,
+    }
 
-    Strips leaked ANTHROPIC_*, pins caller values, sets CLAUDE_CONFIG_DIR to the project-local
-    config dir so ~/.claude/settings.json is bypassed.
+
+def build_subject_env(endpoint: str, apikey: str, model: str) -> dict[str, str]:
+    """Env for the subject agent IN CONTAINER (run/verify). Minimal — only ANTHROPIC_*.
+
+    Does NOT copy host env (would leak host HOME/PATH into the container and break
+    claude init). Does NOT set CLAUDE_CONFIG_DIR (the container has no cc-switch to
+    bypass). `docker exec -e` augments the container's own PATH/HOME from the image.
     """
-    env = _strip_anthropic(base_env if base_env is not None else dict(os.environ))
-    env["ANTHROPIC_BASE_URL"] = endpoint
-    env["ANTHROPIC_API_KEY"] = apikey
-    env["ANTHROPIC_AUTH_TOKEN"] = apikey
-    env["ANTHROPIC_MODEL"] = model
-    env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = model
-    if CONFIG_DIR.is_dir():
-        env["CLAUDE_CONFIG_DIR"] = str(CONFIG_DIR)
-    return env
+    return _anthropic_vars(endpoint, apikey, model)
 
 
-def build_meta_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
-    """Env for meta work (synthesize, checklist judge) — pinned project endpoint, isolated from cc-switch.
-
-    Endpoint comes from (in priority order):
-      1. TM_SYNTH_BASE_URL / TM_SYNTH_API_KEY / TM_SYNTH_MODEL env vars
-      2. .claude-config/settings.json env block
-    Raises RuntimeError if no endpoint is configured.
-    """
-    env = _strip_anthropic(base_env if base_env is not None else dict(os.environ))
+def _meta_creds() -> tuple[str, str, str]:
     settings = _load_settings()
     base_url = os.environ.get("TM_SYNTH_BASE_URL") or settings.get("ANTHROPIC_BASE_URL")
-    api_key = os.environ.get("TM_SYNTH_API_KEY") or settings.get("ANTHROPIC_AUTH_TOKEN") or settings.get("ANTHROPIC_API_KEY")
-    model = os.environ.get("TM_SYNTH_MODEL") or settings.get("ANTHROPIC_DEFAULT_SONNET_MODEL") or settings.get("ANTHROPIC_MODEL")
+    api_key = (
+        os.environ.get("TM_SYNTH_API_KEY")
+        or settings.get("ANTHROPIC_AUTH_TOKEN")
+        or settings.get("ANTHROPIC_API_KEY")
+    )
+    model = (
+        os.environ.get("TM_SYNTH_MODEL")
+        or settings.get("ANTHROPIC_DEFAULT_SONNET_MODEL")
+        or settings.get("ANTHROPIC_MODEL")
+    )
     if not base_url or not api_key or not model:
         raise RuntimeError(
             "meta claude endpoint not configured: set TM_SYNTH_BASE_URL/TM_SYNTH_API_KEY/TM_SYNTH_MODEL "
             "env vars or populate .claude-config/settings.json (env block: ANTHROPIC_BASE_URL, "
             "ANTHROPIC_AUTH_TOKEN, ANTHROPIC_DEFAULT_SONNET_MODEL)"
         )
-    env["ANTHROPIC_BASE_URL"] = base_url
-    env["ANTHROPIC_API_KEY"] = api_key
-    env["ANTHROPIC_AUTH_TOKEN"] = api_key
-    env["ANTHROPIC_MODEL"] = model
-    env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = model
+    return base_url, api_key, model
+
+
+def build_meta_env(
+    in_container: bool = False,
+    base_env: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Env for meta work.
+
+    in_container=False (synthesize on HOST): full host env (stripped of ANTHROPIC_*)
+      + meta creds + CLAUDE_CONFIG_DIR (bypass host cc-switch).
+    in_container=True (checklist judge IN CONTAINER): minimal — only meta ANTHROPIC_*.
+
+    Endpoint comes from (priority): TM_SYNTH_* env vars > .claude-config/settings.json.
+    Raises RuntimeError if no endpoint is configured.
+    """
+    base_url, api_key, model = _meta_creds()
+    creds = _anthropic_vars(base_url, api_key, model)
+    if in_container:
+        return creds
+    env = _strip_anthropic(base_env if base_env is not None else dict(os.environ))
+    env.update(creds)
     if CONFIG_DIR.is_dir():
         env["CLAUDE_CONFIG_DIR"] = str(CONFIG_DIR)
     return env
@@ -87,4 +107,8 @@ def build_meta_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
 def meta_model() -> str | None:
     """The model to use for meta work (for --model flag), or None to let claude default."""
     settings = _load_settings()
-    return os.environ.get("TM_SYNTH_MODEL") or settings.get("ANTHROPIC_DEFAULT_SONNET_MODEL") or settings.get("ANTHROPIC_MODEL")
+    return (
+        os.environ.get("TM_SYNTH_MODEL")
+        or settings.get("ANTHROPIC_DEFAULT_SONNET_MODEL")
+        or settings.get("ANTHROPIC_MODEL")
+    )

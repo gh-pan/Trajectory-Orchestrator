@@ -133,7 +133,7 @@ def test_grade_checklist_uses_driver(monkeypatch):
 
     monkeypatch.setattr(grade, "Driver", type("D", (), {"docker": staticmethod(lambda *a, **k: FakeDriver())}))
     # checklist judge is meta work — pin meta env/model so build_meta_env/meta_model don't raise/return None
-    monkeypatch.setattr(grade, "build_meta_env", lambda: {"ANTHROPIC_BASE_URL": "https://meta.example.com"})
+    monkeypatch.setattr(grade, "build_meta_env", lambda in_container=False, base_env=None: {"ANTHROPIC_BASE_URL": "https://meta.example.com"})
     monkeypatch.setattr(grade, "meta_model", lambda: "m")
     result = grade.grade_checklist(
         container="c",
@@ -194,7 +194,7 @@ def test_grade_end_to_end_with_fake_docker(monkeypatch):
 
     monkeypatch.setattr(grade, "Driver", type("D", (), {"docker": staticmethod(lambda *a, **k: FakeJudgeDriver())}))
     # grade_checklist is meta work — pin meta env/model
-    monkeypatch.setattr(grade, "build_meta_env", lambda: {"ANTHROPIC_BASE_URL": "https://meta.example.com"})
+    monkeypatch.setattr(grade, "build_meta_env", lambda in_container=False, base_env=None: {"ANTHROPIC_BASE_URL": "https://meta.example.com"})
     monkeypatch.setattr(grade, "meta_model", lambda: "m")
 
     task_spec = FakeTaskSpec(

@@ -150,7 +150,7 @@ def grade_checklist(
     drv = Driver.docker(
         docker,
         container=container,
-        env=build_meta_env(),
+        env=build_meta_env(in_container=True),
         add_dirs=["/workspace"],
         allowed_tools=["Read", "Glob", "Grep", "Bash(cat *)", "Bash(grep *)", "Bash(ls *)", "Bash(pyflakes *)"],
         model=meta_model(),

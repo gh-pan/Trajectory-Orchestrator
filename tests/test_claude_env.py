@@ -25,20 +25,14 @@ def test_strip_anthropic_removes_all_anthropic_keys():
     assert "ANTHROPIC_API_KEY" not in stripped
 
 
-def test_build_subject_env_pins_caller_values(tmp_path, monkeypatch):
+def test_build_subject_env_minimal_for_container(tmp_path, monkeypatch):
+    """Subject agent runs IN CONTAINER: env must be minimal (only ANTHROPIC_*),
+    no host HOME/PATH leakage, no CLAUDE_CONFIG_DIR."""
     monkeypatch.setattr(claude_env, "CONFIG_DIR", tmp_path)
-    base = {
-        "PATH": "/usr/bin",
-        "ANTHROPIC_BASE_URL": "https://host-leak.example.com",
-        "ANTHROPIC_API_KEY": "host-leak-key",
-        "ANTHROPIC_MODEL": "host-leak-model",
-        "HOME": "/tmp",
-    }
     env = claude_env.build_subject_env(
         endpoint="https://subj.example.com",
         apikey="subj-key",
         model="subj-model",
-        base_env=base,
     )
     # caller values pinned
     assert env["ANTHROPIC_BASE_URL"] == "https://subj.example.com"
@@ -46,17 +40,21 @@ def test_build_subject_env_pins_caller_values(tmp_path, monkeypatch):
     assert env["ANTHROPIC_AUTH_TOKEN"] == "subj-key"
     assert env["ANTHROPIC_MODEL"] == "subj-model"
     assert env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "subj-model"
-    # host leaked values stripped (then re-pinned to caller)
-    assert env["HOME"] == "/tmp"
-    assert env["PATH"] == "/usr/bin"
-    # CLAUDE_CONFIG_DIR set to project-local config dir
-    assert env["CLAUDE_CONFIG_DIR"] == str(tmp_path)
+    # NO host env leakage — container provides its own PATH/HOME
+    assert "HOME" not in env
+    assert "PATH" not in env
+    # NO CLAUDE_CONFIG_DIR — container has no cc-switch to bypass
+    assert "CLAUDE_CONFIG_DIR" not in env
+    # only the 5 ANTHROPIC_* keys
+    assert set(env.keys()) == {
+        "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    }
 
 
-def test_build_subject_env_no_config_dir_when_missing(tmp_path, monkeypatch):
-    missing = tmp_path / "does-not-exist"
-    monkeypatch.setattr(claude_env, "CONFIG_DIR", missing)
-    env = claude_env.build_subject_env("ep", "key", "m", base_env={"PATH": "/x"})
+def test_build_subject_env_never_sets_config_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(claude_env, "CONFIG_DIR", tmp_path)
+    env = claude_env.build_subject_env("ep", "key", "m")
     assert "CLAUDE_CONFIG_DIR" not in env
     assert env["ANTHROPIC_BASE_URL"] == "ep"
 
@@ -127,6 +125,33 @@ def test_build_meta_env_env_vars_override_settings(tmp_path, monkeypatch):
     assert env["ANTHROPIC_BASE_URL"] == "https://override.example.com"
     assert env["ANTHROPIC_API_KEY"] == "override-key"
     assert env["ANTHROPIC_MODEL"] == "override-model"
+
+
+def test_build_meta_env_in_container_minimal(tmp_path, monkeypatch):
+    """Checklist judge runs IN CONTAINER: minimal env (only meta ANTHROPIC_*),
+    no host PATH/HOME, no CLAUDE_CONFIG_DIR."""
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({"env": {
+        "ANTHROPIC_BASE_URL": "https://meta.example.com",
+        "ANTHROPIC_AUTH_TOKEN": "meta-key",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL": "meta-model",
+    }}))
+    monkeypatch.setattr(claude_env, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(claude_env, "SETTINGS_FILE", settings)
+    for k in ("TM_SYNTH_BASE_URL", "TM_SYNTH_API_KEY", "TM_SYNTH_MODEL"):
+        monkeypatch.delenv(k, raising=False)
+    env = claude_env.build_meta_env(in_container=True, base_env={"PATH": "/x", "HOME": "/host"})
+    assert env["ANTHROPIC_BASE_URL"] == "https://meta.example.com"
+    assert env["ANTHROPIC_API_KEY"] == "meta-key"
+    assert env["ANTHROPIC_MODEL"] == "meta-model"
+    # minimal — no host env, no CLAUDE_CONFIG_DIR
+    assert "PATH" not in env
+    assert "HOME" not in env
+    assert "CLAUDE_CONFIG_DIR" not in env
+    assert set(env.keys()) == {
+        "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    }
 
 
 def test_meta_model_reads_from_settings(tmp_path, monkeypatch):

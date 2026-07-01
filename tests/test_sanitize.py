@@ -68,6 +68,23 @@ def test_event_structure_preserved(rules):
     assert out["message"]["content"][0]["text"] == "hello"
 
 
+def test_metadata_session_id_removed_from_assistant_and_user(rules):
+    """claude code attaches session_id to assistant/user events too — must be scrubbed."""
+    for ev_type in ("assistant", "user"):
+        ev = {"type": ev_type, "session_id": "sess-x", "message": {"role": ev_type, "content": []}}
+        out = sanitize_event(ev, rules)
+        assert "session_id" not in out, f"session_id leaked on {ev_type} event"
+
+
+def test_cwd_only_normalized_on_system_and_result(rules):
+    """cwd normalization applies to system/result; other events keep their (absent) cwd."""
+    ev = {"type": "assistant", "cwd": "/Users/x", "message": {"content": []}}
+    out = sanitize_event(ev, rules)
+    # cwd on non-system/result event is not force-normalized, but path replacement
+    # in _scrub already rewrote /Users/x -> /home/user via the string replacer.
+    assert out.get("cwd") == "/home/user"
+
+
 def test_sanitize_jsonl_keeps_event_count(tmp_path, rules):
     inp = FIXTURES / "trajectory_dirty.jsonl"
     outp = tmp_path / "clean.jsonl"

@@ -44,6 +44,7 @@ class Driver:
             "--print",
             "--input-format", "stream-json",
             "--output-format", "stream-json",
+            "--verbose",
         ]
         for d in add_dirs or []:
             args += ["--add-dir", d]
@@ -79,6 +80,7 @@ class Driver:
             "--print",
             "--input-format", "stream-json",
             "--output-format", "stream-json",
+            "--verbose",
             "--dangerously-skip-permissions",
         ]
         for d in add_dirs or []:
