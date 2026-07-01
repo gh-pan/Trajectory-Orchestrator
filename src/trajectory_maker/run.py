@@ -1,6 +1,8 @@
 """Stage 3: run a task in docker, record trajectory, grade, package, destroy."""
 
 import json
+import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +24,7 @@ def run(
     output: Path = Path("./dataset"),
     max_turns: int = 1,
     timeout_seconds: int = 1800,
+    idle_timeout_seconds: int = 300,
     keep: bool = False,
 ) -> Path:
     spec = load_task_spec(task_dir / "task.yaml")
@@ -48,14 +51,47 @@ def run(
         drv = Driver.docker(docker, container, env=env, add_dirs=["/workspace"], model=model)
         drv.send_user_message(spec.initial_instruction)
         events = []
+
+        # Watchdog: kill the claude process if no event for idle_timeout_seconds
+        # (stuck on a long API call) OR wall-clock exceeds timeout_seconds.
+        # Without this the events() loop blocks forever on a hung API call.
+        last_event = [time.monotonic()]
+        killed = threading.Event()
+        stop = threading.Event()
+
+        def watchdog():
+            wall_start = time.monotonic()
+            while not stop.wait(5):
+                now = time.monotonic()
+                if now - last_event[0] > idle_timeout_seconds:
+                    killed.set()
+                    try:
+                        drv._proc.terminate()
+                    except Exception:
+                        pass
+                    return
+                if now - wall_start > timeout_seconds:
+                    killed.set()
+                    try:
+                        drv._proc.terminate()
+                    except Exception:
+                        pass
+                    return
+
+        wd = threading.Thread(target=watchdog, daemon=True)
+        wd.start()
         with raw_path.open("w") as f:
             for ev in drv.events():
                 events.append(ev)
                 f.write(json.dumps(ev, ensure_ascii=False) + "\n")
+                last_event[0] = time.monotonic()
+                if ev.get("type") == "result":
+                    break
+        stop.set()
         drv.close()
 
         # auth error short-circuit: do not package
-        termination = detect_termination(events)
+        termination = detect_termination(events, timeout=killed.is_set())
         if termination == "auth_error":
             raise RuntimeError("auth error during run; trajectory meaningless, not packaged")
 

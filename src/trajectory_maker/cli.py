@@ -59,12 +59,14 @@ def run(
     output: Path = typer.Option(Path("./dataset"), "--output", "-o"),
     max_turns: int = typer.Option(1, "--max-turns"),
     timeout: int = typer.Option(1800, "--timeout"),
+    idle_timeout: int = typer.Option(300, "--idle-timeout", help="kill agent if no event for N seconds"),
     keep: bool = typer.Option(False, "--keep"),
 ) -> None:
     """Stage 3: run task in docker, record trajectory, grade, package."""
     from .run import run as do_run
     out = do_run(task_dir, endpoint=endpoint, apikey=apikey, model=model,
-                 output=output, max_turns=max_turns, timeout_seconds=timeout, keep=keep)
+                 output=output, max_turns=max_turns, timeout_seconds=timeout,
+                 idle_timeout_seconds=idle_timeout, keep=keep)
     typer.echo(f"packaged -> {out}")
 
 
