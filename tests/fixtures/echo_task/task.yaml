@@ -1,0 +1,25 @@
+task_id: echo-create-done
+category: devops
+source:
+  type: local-folder
+  ref: ./workspace
+initial_instruction: |
+  在 /workspace 下创建文件 done.txt，内容为 hello。
+objective: |
+  /workspace/done.txt 存在且内容为 hello。
+input_env:
+  dockerfile: Dockerfile
+  workspace:
+    path: workspace
+expected_final_env:
+  description: |
+    /workspace/done.txt 存在，内容为 hello。
+rubrics:
+  - id: r1
+    type: script
+    description: done.txt 存在且内容为 hello
+    run: rubrics/check.sh
+    interpreter: bash
+    pass_condition: exit_zero
+    pass_value: ""
+    timeout_seconds: 30
