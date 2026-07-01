@@ -128,3 +128,33 @@ def test_docker_backend_uses_exec_pipes(monkeypatch):
     assert "claude" in calls["cmd"]
     assert "--dangerously-skip-permissions" in calls["cmd"]
     assert calls["env"]["ANTHROPIC_API_KEY"] == "k"
+
+
+def test_docker_backend_allowed_tools_propagate(monkeypatch):
+    calls = {}
+
+    class FakeDocker:
+        def exec_pipes(self, container, cmd, env=None):
+            calls["cmd"] = cmd
+            class FakeProc:
+                stdin = None
+                stdout = None
+                stderr = None
+                def poll(self): return 0
+                def wait(self, timeout=None): return 0
+                def terminate(self): pass
+            return FakeProc()
+
+    Driver.docker(
+        FakeDocker(),
+        container="tm-judge-x",
+        env={"ANTHROPIC_API_KEY": "k"},
+        add_dirs=["/workspace"],
+        allowed_tools=["Read", "Glob", "Bash(cat *)"],
+        model="m",
+    )
+    cmd = calls["cmd"]
+    assert "--allowedTools" in cmd
+    # each tool appears as a value after --allowedTools
+    assert "Read" in cmd and "Glob" in cmd and "Bash(cat *)" in cmd
+    assert "--dangerously-skip-permissions" in cmd  # still present

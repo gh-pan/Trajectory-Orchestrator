@@ -1,7 +1,8 @@
 """Grading primitive: script rubrics (exec in container) + checklist rubrics (claude judge)."""
 
 import json
-from dataclasses import dataclass, field
+import re
+from dataclasses import dataclass
 from typing import Literal
 
 from .driver import Driver
@@ -31,19 +32,37 @@ class ScoreSummary:
     preferred_total: int
 
 
+@dataclass
+class GradeOutcome:
+    results: list[RubricResult]
+    summary: ScoreSummary
+
+
 def judge_pass_condition(condition: str, stdout: str, exit_code: int) -> bool:
-    """Evaluate a script rubric's pass_condition against exec output."""
+    """Evaluate a script rubric's pass_condition against exec output.
+
+    Supports inline form: 'exit_zero', 'output_contains:<substr>', 'output_matches:<regex>'.
+    """
     if condition == "exit_zero":
         return exit_code == 0
     if condition.startswith("output_contains:"):
         substr = condition.split(":", 1)[1]
         return substr in stdout
     if condition.startswith("output_matches:"):
-        import re
-
         pattern = condition.split(":", 1)[1]
         return re.search(pattern, stdout) is not None
     raise ValueError(f"unknown pass_condition: {condition}")
+
+
+def _normalize_pass_condition(condition: str, pass_value: str) -> str:
+    """Reconcile spec's pass_value field with inline condition form.
+
+    If condition is a bare 'output_contains'/'output_matches' (no inline value) and pass_value
+    is non-empty, build 'condition:pass_value'. Otherwise return condition unchanged.
+    """
+    if condition in ("output_contains", "output_matches") and pass_value:
+        return f"{condition}:{pass_value}"
+    return condition
 
 
 def aggregate(results: list[RubricResult]) -> ScoreSummary:
@@ -80,17 +99,19 @@ def grade_script(
     rubric_run_cmd: list[str],
     pass_condition: str,
     timeout_seconds: int = 120,
+    id: str = "",
+    severity: str = "required",
 ) -> RubricResult:
     """Execute a script rubric inside the container and judge by pass_condition."""
     try:
         code, stdout, stderr = docker.exec(container, rubric_run_cmd, timeout=timeout_seconds)
     except Exception as e:
-        return RubricResult(id="", type="script", severity="required", passed=False, reason=f"exec error: {e}")
+        return RubricResult(id=id, type="script", severity=severity, passed=False, reason=f"exec error: {e}")
     passed = judge_pass_condition(pass_condition, stdout, code)
     return RubricResult(
-        id="",
+        id=id,
         type="script",
-        severity="required",
+        severity=severity,
         passed=passed,
         exit_code=code,
         stdout_tail=stdout[-200:],
@@ -107,6 +128,7 @@ def grade_checklist(
     description: str,
     target_files: list[str] | None = None,
     env: dict[str, str] | None = None,
+    severity: str = "required",
 ) -> RubricResult:
     """Run an independent read-only claude judge in the container; parse StructuredOutput from result."""
     system = (
@@ -125,13 +147,18 @@ def grade_checklist(
         container=container,
         env=env,
         add_dirs=["/workspace"],
+        allowed_tools=["Read", "Glob", "Grep", "Bash(cat *)", "Bash(grep *)", "Bash(ls *)", "Bash(pyflakes *)"],
     )
     drv.send_user_message(system + "\n\n" + user)
     result_text = ""
-    for ev in drv.events():
-        if ev.get("type") == "result":
-            result_text = ev.get("result", "")
-    drv.close()
+    try:
+        for ev in drv.events():
+            if ev.get("type") == "result":
+                result_text = ev.get("result", "")
+    finally:
+        drv.close()
+    if not result_text:
+        return RubricResult(id=rubric_id, type="checklist", severity=severity, passed=False, reason="judge produced no result event")
     try:
         payload = json.loads(result_text)
         passed = bool(payload.get("pass"))
@@ -142,7 +169,7 @@ def grade_checklist(
     return RubricResult(
         id=rubric_id,
         type="checklist",
-        severity="required",
+        severity=severity,
         passed=passed,
         reason=reason,
     )
@@ -153,22 +180,23 @@ def grade(
     docker,
     task_spec,
     env: dict[str, str] | None = None,
-) -> "GradeOutcome":
+) -> GradeOutcome:
     """Grade all rubrics of a task_spec against the live container's /workspace."""
     results: list[RubricResult] = []
     for rb in task_spec.rubrics:
         if rb.type == "script":
             interp = rb.interpreter or "bash"
             cmd = [interp, "-lc", f"/workspace/{rb.run}"] if interp == "bash" else [interp, f"/workspace/{rb.run}"]
+            condition = _normalize_pass_condition(rb.pass_condition, rb.pass_value or "")
             r = grade_script(
                 container=container,
                 docker=docker,
                 rubric_run_cmd=cmd,
-                pass_condition=rb.pass_condition,
+                pass_condition=condition,
                 timeout_seconds=rb.timeout_seconds,
+                id=rb.id,
+                severity=rb.severity,
             )
-            r.id = rb.id
-            r.severity = rb.severity
             results.append(r)
         else:  # checklist
             r = grade_checklist(
@@ -180,14 +208,8 @@ def grade(
                 description=rb.description,
                 target_files=rb.target_files,
                 env=env,
+                severity=rb.severity,
             )
-            r.severity = rb.severity
             results.append(r)
     summary = aggregate(results)
     return GradeOutcome(results=results, summary=summary)
-
-
-@dataclass
-class GradeOutcome:
-    results: list[RubricResult]
-    summary: ScoreSummary

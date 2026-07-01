@@ -69,6 +69,7 @@ class Driver:
         container: str,
         env: dict[str, str] | None = None,
         add_dirs: list[str] | None = None,
+        allowed_tools: list[str] | None = None,
         model: str | None = None,
     ) -> "Driver":
         cmd = [
@@ -80,6 +81,8 @@ class Driver:
         ]
         for d in add_dirs or []:
             cmd += ["--add-dir", d]
+        for t in allowed_tools or []:
+            cmd += ["--allowedTools", t]
         if model:
             cmd += ["--model", model]
         proc = docker_client.exec_pipes(container, cmd, env=env)

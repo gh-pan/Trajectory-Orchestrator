@@ -145,3 +145,68 @@ def test_grade_checklist_uses_driver(monkeypatch):
     assert result.reason == "all good"
     assert "obj" in captured["prompt"]
     assert "crit" in captured["prompt"]
+
+
+def test_normalize_pass_condition_uses_pass_value():
+    from trajectory_maker.grade import _normalize_pass_condition
+    assert _normalize_pass_condition("output_contains", "OK") == "output_contains:OK"
+    assert _normalize_pass_condition("output_matches", r"\d+") == r"output_matches:\d+"
+    # inline form kept as-is
+    assert _normalize_pass_condition("output_contains:OK", "") == "output_contains:OK"
+    # exit_zero unchanged
+    assert _normalize_pass_condition("exit_zero", "") == "exit_zero"
+
+
+def test_grade_end_to_end_with_fake_docker(monkeypatch):
+    """grade() orchestrates script + checklist rubrics with a fake docker and task_spec."""
+    from trajectory_maker import grade
+
+    class FakeRubric:
+        def __init__(self, **kw):
+            self.__dict__.update(kw)
+
+    class FakeTaskSpec:
+        def __init__(self, rubrics, objective="obj"):
+            self.rubrics = rubrics
+            self.objective = objective
+
+    exec_calls = []
+
+    class FakeDocker:
+        def exec(self, container, cmd, timeout=None):
+            exec_calls.append(cmd)
+            # script rubric: echo OK -> output_contains:OK passes
+            return 0, "OK\n", ""
+
+    # checklist judge: monkeypatch Driver.docker to return a fake that yields a result event
+    class FakeJudgeDriver:
+        def send_user_message(self, text):
+            pass
+
+        def events(self):
+            yield {"type": "result", "result": '{"pass": true, "reason": "ok"}'}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(grade, "Driver", type("D", (), {"docker": staticmethod(lambda *a, **k: FakeJudgeDriver())}))
+
+    task_spec = FakeTaskSpec(
+        rubrics=[
+            FakeRubric(id="r1", type="script", run="rubrics/check.sh", interpreter="bash",
+                       pass_condition="output_contains", pass_value="OK", timeout_seconds=60, severity="required"),
+            FakeRubric(id="r2", type="checklist", description="desc", criterion="crit",
+                       target_files=["src/**"], severity="preferred"),
+        ],
+    )
+    outcome = grade.grade("container-x", FakeDocker(), task_spec, env={"ANTHROPIC_MODEL": "m"})
+    assert len(outcome.results) == 2
+    assert outcome.results[0].id == "r1"
+    assert outcome.results[0].passed is True
+    assert outcome.results[0].severity == "required"
+    assert outcome.results[1].id == "r2"
+    assert outcome.results[1].severity == "preferred"
+    # required passes, preferred passes -> pass
+    assert outcome.summary.verdict == "pass"
+    # script ran via docker.exec with /workspace/rubrics/check.sh
+    assert any("/workspace/rubrics/check.sh" in " ".join(c) for c in exec_calls)
