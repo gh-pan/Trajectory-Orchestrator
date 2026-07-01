@@ -80,8 +80,11 @@ def synthesize(
     input_ref: str,
     tasks_root: Path,
     model: str | None = None,
+    idle_timeout_seconds: int = 300,
 ) -> Path:
     """Run the full synthesize stage. Returns the final task dir path."""
+    import threading
+    import time
     import uuid
 
     tasks_root.mkdir(parents=True, exist_ok=True)
@@ -97,8 +100,26 @@ def synthesize(
         env=meta_env,
     )
     drv.send_user_message(prompt)
+    # Watchdog: kill synthesize claude if no event for idle_timeout_seconds.
+    # Without this a stalled API call hangs synthesize forever (files may
+    # already be written, so killing is safe — finalize will validate them).
+    last_event = [time.monotonic()]
+    stop = threading.Event()
+
+    def watchdog():
+        while not stop.wait(5):
+            if time.monotonic() - last_event[0] > idle_timeout_seconds:
+                try:
+                    drv._proc.terminate()
+                except Exception:
+                    pass
+                return
+
+    wd = threading.Thread(target=watchdog, daemon=True)
+    wd.start()
     # consume all events (claude writes files as tool_use side effects)
     for _ev in drv.events():
-        pass
+        last_event[0] = time.monotonic()
+    stop.set()
     drv.close()
     return finalize_task_dir(temp_dir, tasks_root)
