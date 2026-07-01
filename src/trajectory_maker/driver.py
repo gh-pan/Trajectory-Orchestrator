@@ -37,6 +37,7 @@ class Driver:
         allowed_tools: list[str] | None = None,
         system_prompt: str | None = None,
         model: str | None = None,
+        env: dict[str, str] | None = None,
     ) -> "Driver":
         args = [
             "claude",
@@ -59,6 +60,7 @@ class Driver:
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
+            env=env,
         )
         return cls(proc)
 

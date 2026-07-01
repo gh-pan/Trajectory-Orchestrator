@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
+from .claude_env import build_meta_env, meta_model
 from .driver import Driver
 
 
@@ -127,10 +128,14 @@ def grade_checklist(
     rubric_id: str,
     description: str,
     target_files: list[str] | None = None,
-    env: dict[str, str] | None = None,
     severity: str = "required",
 ) -> RubricResult:
-    """Run an independent read-only claude judge in the container; parse StructuredOutput from result."""
+    """Run an independent read-only claude judge in the container; parse StructuredOutput from result.
+
+    The judge is meta work — it uses the project's pinned meta endpoint (build_meta_env) rather
+    than the subject agent's caller-supplied credentials, so judging stays independent of the
+    agent under test and free of cc-switch leakage.
+    """
     system = (
         "你是严格的任务验收裁判。只能读文件、跑只读诊断命令。禁止修改任何文件。"
         "最终在 result 中返回 JSON：{\"pass\": bool, \"reason\": string}。"
@@ -145,9 +150,10 @@ def grade_checklist(
     drv = Driver.docker(
         docker,
         container=container,
-        env=env,
+        env=build_meta_env(),
         add_dirs=["/workspace"],
         allowed_tools=["Read", "Glob", "Grep", "Bash(cat *)", "Bash(grep *)", "Bash(ls *)", "Bash(pyflakes *)"],
+        model=meta_model(),
     )
     drv.send_user_message(system + "\n\n" + user)
     result_text = ""
@@ -179,7 +185,6 @@ def grade(
     container: str,
     docker,
     task_spec,
-    env: dict[str, str] | None = None,
 ) -> GradeOutcome:
     """Grade all rubrics of a task_spec against the live container's /workspace."""
     results: list[RubricResult] = []
@@ -207,7 +212,6 @@ def grade(
                 rubric_id=rb.id,
                 description=rb.description,
                 target_files=rb.target_files,
-                env=env,
                 severity=rb.severity,
             )
             results.append(r)

@@ -22,6 +22,9 @@ _verify_log/
 _judge_log/
 *.raw.jsonl
 
+# Claude config isolation — contains real credentials
+.claude-config/settings.json
+
 # IDE / OS
 .DS_Store
 .idea/

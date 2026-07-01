@@ -52,3 +52,14 @@ uv run pytest --run-integration        # + docker 集成测试
 TM_E2E_ENDPOINT=... TM_E2E_APIKEY=... TM_E2E_MODEL=... \
   uv run pytest --run-e2e              # + 真实端点 e2e
 ```
+
+## Claude 配置隔离（摆脱 cc-switch）
+
+项目自动隔离 Claude Code 子进程，不被全局 cc-switch 控制：
+
+- **被测 agent（run）**：用 `--endpoint/--apikey/--model` 传入的凭证
+- **元工作（synthesize、checklist 判定）**：用项目固定端点，配置方式（二选一）：
+  - 复制 `.claude-config/settings.json.template` 为 `.claude-config/settings.json`，填入 `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_DEFAULT_SONNET_MODEL`
+  - 或设环境变量 `TM_SYNTH_BASE_URL`/`TM_SYNTH_API_KEY`/`TM_SYNTH_MODEL`
+
+隔离机制：剥离宿主所有 `ANTHROPIC_*` 环境变量 + 设 `CLAUDE_CONFIG_DIR` 指向项目本地 `.claude-config/`，绕开 `~/.claude/settings.json`。

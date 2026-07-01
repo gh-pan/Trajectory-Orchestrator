@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .claude_env import build_subject_env
 from .docker import DockerClient
 from .driver import Driver
 from .grade import grade, RubricResult, ScoreSummary
@@ -87,8 +88,10 @@ def verify(
         if not all(smoke.values()):
             return _finish(spec, "fail", smoke, [], _empty_summary(), agent_log_path, docker, container, image_tag, keep_on_fail)
 
-        # run verify agent
-        env = _env(endpoint, apikey, model)
+        # run verify agent — subject layer: caller-supplied endpoint, isolated from cc-switch
+        if not (endpoint and apikey and model):
+            raise ValueError("verify requires --endpoint/--apikey/--model to run the verify agent")
+        env = build_subject_env(endpoint, apikey, model)
         drv = Driver.docker(docker, container, env=env, add_dirs=["/workspace"], model=model)
         drv.send_user_message(spec.initial_instruction)
         with agent_log_path.open("w") as f:
@@ -96,7 +99,7 @@ def verify(
                 f.write(json.dumps(ev, ensure_ascii=False) + "\n")
         drv.close()
 
-        grade_outcome = grade(container, docker, spec, env=env)
+        grade_outcome = grade(container, docker, spec)
         results = grade_outcome.results
         summary = grade_outcome.summary
         verdict = "pass" if summary.verdict == "pass" else "fail"
@@ -107,14 +110,6 @@ def verify(
 
 def _empty_summary() -> ScoreSummary:
     return ScoreSummary(verdict="fail", score=0.0, required_pass=0, required_total=0, preferred_pass=0, preferred_total=0)
-
-
-def _env(endpoint, apikey, model) -> dict[str, str]:
-    env = {}
-    if endpoint: env["ANTHROPIC_BASE_URL"] = endpoint
-    if apikey: env["ANTHROPIC_API_KEY"] = apikey
-    if model: env["ANTHROPIC_MODEL"] = model
-    return env
 
 
 def _finish(spec, verdict, smoke, results, summary, agent_log_path, docker, container, image_tag, keep_on_fail) -> VerifyResult:

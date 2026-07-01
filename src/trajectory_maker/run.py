@@ -5,20 +5,13 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .claude_env import build_subject_env
 from .docker import DockerClient
 from .driver import Driver
 from .grade import grade
 from .models import load_task_spec
 from .orchestrator import detect_termination
 from .package import package_run
-
-
-def _env(endpoint, apikey, model) -> dict[str, str]:
-    env = {}
-    if endpoint: env["ANTHROPIC_BASE_URL"] = endpoint
-    if apikey: env["ANTHROPIC_API_KEY"] = apikey
-    if model: env["ANTHROPIC_MODEL"] = model
-    return env
 
 
 def run(
@@ -51,7 +44,7 @@ def run(
         docker.cp_from(container, "/workspace", str(work_dir / "initial_env"))
         _layout_snapshot(work_dir / "initial_env")
 
-        env = _env(endpoint, apikey, model)
+        env = build_subject_env(endpoint, apikey, model)
         drv = Driver.docker(docker, container, env=env, add_dirs=["/workspace"], model=model)
         drv.send_user_message(spec.initial_instruction)
         events = []
@@ -72,7 +65,7 @@ def run(
 
         ended_at = datetime.now(timezone.utc).isoformat()
         # grade against live container
-        grade_outcome = grade(container, docker, spec, env=env)
+        grade_outcome = grade(container, docker, spec)
 
         # package
         results = grade_outcome.results

@@ -4,6 +4,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from .claude_env import build_meta_env, meta_model
 from .driver import Driver
 from .models import TaskSpec, load_task_spec, TaskIdConflictError
 
@@ -88,10 +89,12 @@ def synthesize(
     temp_dir.mkdir(parents=True)
     input_path, _source_meta = _prepare_input(input_ref, temp_dir.parent)
     prompt = build_synthesize_prompt(str(input_path), str(temp_dir))
+    meta_env = build_meta_env()
     drv = Driver.local(
         add_dirs=[str(input_path), str(temp_dir)],
         allowed_tools=["Read", "Glob", "Grep", "Write", "Bash(git clone)", "Bash(git log)"],
-        model=model,
+        model=model or meta_model(),
+        env=meta_env,
     )
     drv.send_user_message(prompt)
     # consume all events (claude writes files as tool_use side effects)
