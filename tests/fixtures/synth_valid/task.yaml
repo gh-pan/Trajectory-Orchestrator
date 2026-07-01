@@ -1,0 +1,25 @@
+task_id: synth-demo-task
+category: bugfix
+source:
+  type: local-folder
+  ref: /tmp/demo
+initial_instruction: |
+  修复 bug。
+objective: |
+  测试通过。
+input_env:
+  dockerfile: Dockerfile
+  workspace:
+    path: workspace
+    init_script: setup.sh
+expected_final_env:
+  description: 测试通过。
+rubrics:
+  - id: r1
+    type: script
+    description: 测试脚本通过检查
+    run: rubrics/check.sh
+    interpreter: bash
+    pass_condition: exit_zero
+    pass_value: ""
+    timeout_seconds: 60
