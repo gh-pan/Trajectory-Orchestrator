@@ -1,0 +1,5 @@
+{"type":"system","subtype":"init","session_id":"sess-secret123","cwd":"/Users/larr/tasks","version":"2.1.175","hostname":"larr-mac"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"我用 ANTHROPIC_API_KEY=sk-ant-abc123secret 来调用。"}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"cloned to /tmp/tm-clone-x7f/repo"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"修改 /Volumes/Files/EntropyOrder/Trajectory-Maker/src/app.py 完成。"}]}}
+{"type":"result","subtype":"success","result":"done","session_id":"sess-secret123","cwd":"/Users/larr/tasks"}

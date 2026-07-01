@@ -1,0 +1,39 @@
+# 凭证：敏感环境变量名（匹配后值替换为 <redacted>）
+secret_env_keys:
+  - ANTHROPIC_API_KEY
+  - ANTHROPIC_AUTH_TOKEN
+  - ANTHROPIC_BASE_URL
+  - API_KEY
+  - SECRET
+  - TOKEN
+  - PASSWORD
+
+# 凭证：正则模式（匹配即替换为 <redacted>）
+secret_patterns:
+  - 'sk-ant-[A-Za-z0-9_-]+'
+  - 'sk-[A-Za-z0-9]{20,}'
+  - 'Bearer\s+[A-Za-z0-9._-]+'
+  - 'Authorization:\s*[^\s]+'
+
+# 路径：宿主前缀 -> 规范化目标
+path_replacements:
+  - pattern: '/Users/[^/]+'
+    replacement: '/home/user'
+  - pattern: '/home/[^/]+'
+    replacement: '/home/user'
+  - pattern: '/tmp/tm-clone-[A-Za-z0-9_-]+'
+    replacement: '/workspace'
+  - pattern: '/Volumes/[^ ]*Trajectory-Maker'
+    replacement: '/workspace'
+
+# 元数据：需要移除的字段（在 system/result 事件顶层）
+remove_metadata_fields:
+  - session_id
+  - conversation_id
+  - transcript_path
+  - hostname
+  - machine_id
+
+# 元数据：需要规范化的字段
+normalize_metadata:
+  cwd: '/workspace'
