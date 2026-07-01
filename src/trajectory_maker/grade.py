@@ -185,8 +185,20 @@ def grade_checklist(
         drv.close()
     if not result_text:
         return RubricResult(id=rubric_id, type="checklist", severity=severity, passed=False, reason="judge produced no result event")
+    # Strip markdown code fences (```json ... ``` or ``` ... ```) — LLM judges
+    # often wrap JSON output in fences, which would break json.loads.
+    text = result_text.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        # drop leading fence line (```json or ```)
+        if lines and lines[0].strip().startswith("```"):
+            lines = lines[1:]
+        # drop trailing fence line
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
     try:
-        payload = json.loads(result_text)
+        payload = json.loads(text)
         passed = bool(payload.get("pass"))
         reason = str(payload.get("reason", ""))
     except (json.JSONDecodeError, ValueError):

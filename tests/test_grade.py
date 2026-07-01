@@ -216,3 +216,21 @@ def test_grade_end_to_end_with_fake_docker(monkeypatch):
     assert outcome.summary.verdict == "pass"
     # script ran via docker.exec with /workspace/rubrics/check.sh
     assert any("/workspace/rubrics/check.sh" in " ".join(c) for c in exec_calls)
+
+
+def test_grade_checklist_strips_markdown_fence(monkeypatch):
+    """Judge often wraps JSON in ```json ... ``` fences — must still parse."""
+    from trajectory_maker import grade
+
+    class FakeDriver:
+        def send_user_message(self, text): pass
+        def events(self):
+            yield {"type": "result", "result": '```json\n{"pass": true, "reason": "ok"}\n```'}
+        def close(self): pass
+
+    monkeypatch.setattr(grade, "Driver", type("D", (), {"docker": staticmethod(lambda *a, **k: FakeDriver())}))
+    monkeypatch.setattr(grade, "build_meta_env", lambda in_container=False, base_env=None: {"ANTHROPIC_BASE_URL": "x"})
+    monkeypatch.setattr(grade, "meta_model", lambda: "m")
+    r = grade.grade_checklist("c", object(), "o", "crit", "r1", "d", ["f"])
+    assert r.passed is True
+    assert r.reason == "ok"
