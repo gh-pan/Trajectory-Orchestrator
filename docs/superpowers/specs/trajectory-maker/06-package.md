@@ -13,6 +13,7 @@
 ├── initial_env/
 ├── expected_final_env/
 ├── actual_final_env/
+├── rubrics/
 └── trajectory.jsonl
 
 <output_root>/index.jsonl               # 全局轻量索引（一行一条数据汇总）
@@ -21,6 +22,8 @@
 - `task_id` 来自 TaskSpec。
 - `run_id` 由编排器生成（如 `20260701-1530a7`），同一任务可多次采集不同 model/端点的轨迹而不覆盖。
 - `--output` 指定 `<output_root>`，默认 `./dataset/`。
+
+> 注：`rubrics/`（评分脚本 + checklist 定义）是**评分工具**，独立于 `expected_final_env/`（后者只放环境描述 + 参考补丁，即"agent 跑完后环境应该长什么样"）。两者不混。
 
 ## 各文件内容
 
@@ -94,13 +97,22 @@ initial_env/
 
 ### expected_final_env/
 
-来自 TaskSpec 的预期终末环境：
+来自 TaskSpec 的预期终末环境描述（**不含评分脚本**——rubrics 是评分工具，不是环境的一部分）：
 
 ```
 expected_final_env/
 ├── description.txt           # expected_final_env.description
-├── reference_patch.diff      # expected_final_env.reference_patch（若有）
-└── rubrics/                  # rubric 定义拷贝（checklist 文本 + script 文件）
+└── reference_patch.diff      # expected_final_env.reference_patch（若有）
+```
+
+### rubrics/
+
+顶层评分工具目录（从 task_dir/rubrics 拷贝 + checklist 定义）：
+
+```
+rubrics/
+├── check_xxx.sh              # script 类 rubric 引用的脚本
+└── checklist.yaml            # checklist 类 rubric 的 id/description/criterion/severity
 ```
 
 ### actual_final_env/
@@ -127,7 +139,7 @@ actual_final_env/
 6. 拷贝 expected_final_env/（从 TaskSpec 抽取）
 7. 拷贝 actual_final_env/（run 结束时 cp 的快照，评分前已取出）
 8. 清洗 trajectory_raw.jsonl → trajectory.jsonl（见 05-sanitize.md）
-9. 校验目录完整性（6 个条目齐全、trajectory 合法 jsonl、凭证零命中）
+9. 校验目录完整性（7 个条目齐全、trajectory 合法 jsonl、凭证零命中）
 10. 写 _manifest 行到 <output_root>/index.jsonl（追加一行汇总：task_id/run_id/category/score/verdict/termination/路径）
 ```
 
