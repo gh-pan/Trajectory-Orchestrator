@@ -111,10 +111,7 @@ def synthesize(
     def watchdog():
         while not stop.wait(5):
             if time.monotonic() > deadline:
-                try:
-                    drv._proc.terminate()
-                except Exception:
-                    pass
+                drv.kill()
                 return
 
     wd = threading.Thread(target=watchdog, daemon=True)

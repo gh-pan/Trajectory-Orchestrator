@@ -159,6 +159,9 @@ def grade_checklist(
     # Wall-clock watchdog: kill the judge after 180s regardless of event flow.
     # deepseek streams thinking_tokens slowly, so an idle (no-event) timeout
     # never fires; a hard wall-clock cap guarantees the judge can't hang grade.
+    # SIGKILL the docker-exec client AND pkill the container's claude process
+    # (terminate()/SIGTERM is ignored by docker exec; the container's claude
+    # would otherwise orphan and keep the connection open).
     import threading
     import time
     deadline = time.monotonic() + 180
@@ -167,8 +170,9 @@ def grade_checklist(
     def watchdog():
         while not stop.wait(5):
             if time.monotonic() > deadline:
+                drv.kill()
                 try:
-                    drv._proc.terminate()
+                    docker.exec(container, ["pkill", "-9", "-f", "claude"], timeout=10)
                 except Exception:
                     pass
                 return

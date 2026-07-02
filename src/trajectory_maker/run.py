@@ -63,17 +63,11 @@ def run(
             wall_start = time.monotonic()
             while not stop.wait(5):
                 now = time.monotonic()
-                if now - last_event[0] > idle_timeout_seconds:
+                if now - last_event[0] > idle_timeout_seconds or now - wall_start > timeout_seconds:
                     killed.set()
+                    drv.kill()
                     try:
-                        drv._proc.terminate()
-                    except Exception:
-                        pass
-                    return
-                if now - wall_start > timeout_seconds:
-                    killed.set()
-                    try:
-                        drv._proc.terminate()
+                        docker.exec(container, ["pkill", "-9", "-f", "claude"], timeout=10)
                     except Exception:
                         pass
                     return

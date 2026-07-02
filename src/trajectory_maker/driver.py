@@ -120,6 +120,14 @@ class Driver:
     def wait(self, timeout: float | None = None) -> int:
         return self._proc.wait(timeout=timeout)
 
+    def kill(self) -> None:
+        """Hard-kill the underlying process (SIGKILL). Use from a watchdog when
+        terminate() isn't enough (e.g. docker exec client ignoring SIGTERM)."""
+        try:
+            self._proc.kill()
+        except Exception:
+            pass
+
     def close(self) -> None:
         try:
             if self._proc.stdin and not self._proc.stdin.closed:
@@ -130,6 +138,6 @@ class Driver:
             self._proc.wait(timeout=10)
         except Exception:
             try:
-                self._proc.terminate()
+                self._proc.kill()
             except Exception:
                 pass
