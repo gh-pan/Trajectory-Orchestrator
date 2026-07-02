@@ -82,10 +82,12 @@ def _write_rubrics(out_dir: Path, task_dir: Path, spec: TaskSpec) -> None:
     if src_rub.is_dir():
         for f in src_rub.iterdir():
             shutil.copy2(f, rub_dir / f.name)
-    (rub_dir / "checklist.yaml").write_text(yaml.safe_dump(
-        [{"id": r.id, "type": r.type, "description": r.description,
-          "criterion": r.criterion, "severity": r.severity} for r in spec.rubrics if r.type == "checklist"],
-        allow_unicode=True))
+    checklist_rubrics = [r for r in spec.rubrics if r.type == "checklist"]
+    if checklist_rubrics:
+        (rub_dir / "checklist.yaml").write_text(yaml.safe_dump(
+            [{"id": r.id, "type": r.type, "description": r.description,
+              "criterion": r.criterion, "severity": r.severity} for r in checklist_rubrics],
+            allow_unicode=True))
 
 
 def package_run(
@@ -112,6 +114,10 @@ def package_run(
         shutil.copytree(work_dir / "initial_env", out_dir / "initial_env", dirs_exist_ok=True)
     else:
         (out_dir / "initial_env").mkdir()
+    # initial_env also includes the Dockerfile used to build the image
+    # (the /workspace snapshot doesn't contain it — it lives in task_dir).
+    if (task_dir / "Dockerfile").exists():
+        shutil.copy2(task_dir / "Dockerfile", out_dir / "initial_env" / "Dockerfile")
     if (work_dir / "actual_final_env").exists():
         shutil.copytree(work_dir / "actual_final_env", out_dir / "actual_final_env", dirs_exist_ok=True)
     else:
