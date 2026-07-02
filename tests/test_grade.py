@@ -113,31 +113,23 @@ def test_grade_script_runs_in_container(tmp_path):
         client.rmi(image_tag)
 
 
-def test_grade_checklist_uses_driver(monkeypatch):
+def test_grade_checklist_uses_exec_stream(monkeypatch):
     from trajectory_maker import grade
 
     captured = {}
 
-    class FakeDriver:
-        def __init__(self, **kw):
-            pass
+    class FakeDocker:
+        def exec_stream(self, container, cmd, env=None, timeout=None):
+            # capture the prompt (last argv) + system (second-to-last)
+            captured["cmd"] = cmd
+            # claude -p --output-format json prints one JSON envelope
+            return ['{"type": "result", "result": "{\\"pass\\": true, \\"reason\\": \\"all good\\"}"}']
 
-        def send_user_message(self, text):
-            captured["prompt"] = text
-
-        def events(self):
-            yield {"type": "result", "result": '{"pass": true, "reason": "all good"}'}
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr(grade, "Driver", type("D", (), {"docker": staticmethod(lambda *a, **k: FakeDriver())}))
-    # checklist judge is meta work — pin meta env/model so build_meta_env/meta_model don't raise/return None
     monkeypatch.setattr(grade, "build_meta_env", lambda in_container=False, base_env=None: {"ANTHROPIC_BASE_URL": "https://meta.example.com"})
     monkeypatch.setattr(grade, "meta_model", lambda: "m")
     result = grade.grade_checklist(
         container="c",
-        docker=object(),
+        docker=FakeDocker(),
         objective="obj",
         criterion="crit",
         rubric_id="r1",
@@ -146,8 +138,9 @@ def test_grade_checklist_uses_driver(monkeypatch):
     )
     assert result.passed is True
     assert result.reason == "all good"
-    assert "obj" in captured["prompt"]
-    assert "crit" in captured["prompt"]
+    # the user prompt (containing obj/crit) is the last argv element
+    assert "obj" in captured["cmd"][-1]
+    assert "crit" in captured["cmd"][-1]
 
 
 def test_normalize_pass_condition_uses_pass_value():
@@ -181,19 +174,10 @@ def test_grade_end_to_end_with_fake_docker(monkeypatch):
             # script rubric: echo OK -> output_contains:OK passes
             return 0, "OK\n", ""
 
-    # checklist judge: monkeypatch Driver.docker to return a fake that yields a result event
-    class FakeJudgeDriver:
-        def send_user_message(self, text):
-            pass
+        def exec_stream(self, container, cmd, env=None, timeout=None):
+            # checklist judge: claude -p --output-format json envelope
+            return ['{"type": "result", "result": "{\\"pass\\": true, \\"reason\\": \\"ok\\"}"}']
 
-        def events(self):
-            yield {"type": "result", "result": '{"pass": true, "reason": "ok"}'}
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr(grade, "Driver", type("D", (), {"docker": staticmethod(lambda *a, **k: FakeJudgeDriver())}))
-    # grade_checklist is meta work — pin meta env/model
     monkeypatch.setattr(grade, "build_meta_env", lambda in_container=False, base_env=None: {"ANTHROPIC_BASE_URL": "https://meta.example.com"})
     monkeypatch.setattr(grade, "meta_model", lambda: "m")
 
@@ -222,15 +206,13 @@ def test_grade_checklist_strips_markdown_fence(monkeypatch):
     """Judge often wraps JSON in ```json ... ``` fences — must still parse."""
     from trajectory_maker import grade
 
-    class FakeDriver:
-        def send_user_message(self, text): pass
-        def events(self):
-            yield {"type": "result", "result": '```json\n{"pass": true, "reason": "ok"}\n```'}
-        def close(self): pass
+    class FakeDocker:
+        def exec_stream(self, container, cmd, env=None, timeout=None):
+            # envelope result text contains a fenced JSON block
+            return ['{"type": "result", "result": "```json\\n{\\"pass\\": true, \\"reason\\": \\"ok\\"}\\n```"}']
 
-    monkeypatch.setattr(grade, "Driver", type("D", (), {"docker": staticmethod(lambda *a, **k: FakeDriver())}))
     monkeypatch.setattr(grade, "build_meta_env", lambda in_container=False, base_env=None: {"ANTHROPIC_BASE_URL": "x"})
     monkeypatch.setattr(grade, "meta_model", lambda: "m")
-    r = grade.grade_checklist("c", object(), "o", "crit", "r1", "d", ["f"])
+    r = grade.grade_checklist("c", FakeDocker(), "o", "crit", "r1", "d", ["f"])
     assert r.passed is True
     assert r.reason == "ok"

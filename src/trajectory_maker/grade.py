@@ -130,15 +130,20 @@ def grade_checklist(
     target_files: list[str] | None = None,
     severity: str = "required",
 ) -> RubricResult:
-    """Run an independent read-only claude judge in the container; parse StructuredOutput from result.
+    """Run an independent read-only claude judge in the container; parse JSON verdict.
 
-    The judge is meta work — it uses the project's pinned meta endpoint (build_meta_env) rather
-    than the subject agent's caller-supplied credentials, so judging stays independent of the
-    agent under test and free of cc-switch leakage.
+    Uses a blocking `claude -p --output-format json` via docker.exec_stream with a
+    hard subprocess timeout (180s). This is more robust than streaming + a thread
+    watchdog: subprocess.run's timeout reliably kills the docker-exec client, so
+    the judge can never hang grade (a slow/jammed judge just times out -> fail).
+
+    The judge is meta work — it uses the project's pinned meta endpoint
+    (build_meta_env) rather than the subject agent's caller-supplied credentials.
     """
     system = (
         "你是严格的任务验收裁判。只能读文件、跑只读诊断命令。禁止修改任何文件。"
-        "最终在 result 中返回 JSON：{\"pass\": bool, \"reason\": string}。"
+        "最终在最终回复中返回 JSON：{\"pass\": bool, \"reason\": string}。"
+        "只返回该 JSON，不要其他文字。"
     )
     user = (
         f"任务 objective：{objective}\n"
@@ -147,48 +152,40 @@ def grade_checklist(
         f"目标文件：{target_files or '全部 /workspace'}\n"
         "请在容器 /workspace 内核查，给出 pass 与 reason。"
     )
-    drv = Driver.docker(
-        docker,
-        container=container,
-        env=build_meta_env(in_container=True),
-        add_dirs=["/workspace"],
-        allowed_tools=["Read", "Glob", "Grep", "Bash(cat *)", "Bash(grep *)", "Bash(ls *)", "Bash(pyflakes *)"],
-        model=meta_model(),
-    )
-    drv.send_user_message(system + "\n\n" + user)
-    # Wall-clock watchdog: kill the judge after 180s regardless of event flow.
-    # deepseek streams thinking_tokens slowly, so an idle (no-event) timeout
-    # never fires; a hard wall-clock cap guarantees the judge can't hang grade.
-    # SIGKILL the docker-exec client AND pkill the container's claude process
-    # (terminate()/SIGTERM is ignored by docker exec; the container's claude
-    # would otherwise orphan and keep the connection open).
-    import threading
-    import time
-    deadline = time.monotonic() + 180
-    stop = threading.Event()
+    env = build_meta_env(in_container=True)
+    model = meta_model()
+    cmd = [
+        "claude", "-p", "--output-format", "json", "--dangerously-skip-permissions",
+        "--add-dir", "/workspace",
+    ]
+    for t in ["Read", "Glob", "Grep", "Bash(cat *)", "Bash(grep *)", "Bash(ls *)", "Bash(pyflakes *)"]:
+        cmd += ["--allowedTools", t]
+    if model:
+        cmd += ["--model", model]
+    cmd += ["--append-system-prompt", system, user]
 
-    def watchdog():
-        while not stop.wait(5):
-            if time.monotonic() > deadline:
-                drv.kill()
-                try:
-                    docker.exec(container, ["pkill", "-9", "-f", "claude"], timeout=10)
-                except Exception:
-                    pass
-                return
+    try:
+        lines = docker.exec_stream(container, cmd, env=env, timeout=180)
+    except Exception as e:
+        return RubricResult(
+            id=rubric_id, type="checklist", severity=severity,
+            passed=False, reason=f"judge error/timeout: {type(e).__name__}",
+        )
+    stdout = "\n".join(lines).strip()
 
-    wd = threading.Thread(target=watchdog, daemon=True)
-    wd.start()
+    # claude -p --output-format json prints one JSON envelope: {"type":"result","result":"<text>",...}
     result_text = ""
     try:
-        for ev in drv.events():
-            if ev.get("type") == "result":
-                result_text = ev.get("result", "")
-    finally:
-        stop.set()
-        drv.close()
+        envelope = json.loads(stdout)
+        if isinstance(envelope, dict):
+            result_text = envelope.get("result", "") or ""
+    except (json.JSONDecodeError, ValueError):
+        result_text = stdout  # fall back to raw stdout
     if not result_text:
-        return RubricResult(id=rubric_id, type="checklist", severity=severity, passed=False, reason="judge produced no result event")
+        return RubricResult(
+            id=rubric_id, type="checklist", severity=severity,
+            passed=False, reason="judge produced no result",
+        )
     # Strip markdown code fences (```json ... ``` or ``` ... ```) — LLM judges
     # often wrap JSON output in fences, which would break json.loads.
     text = result_text.strip()
