@@ -100,15 +100,17 @@ def synthesize(
         env=meta_env,
     )
     drv.send_user_message(prompt)
-    # Watchdog: kill synthesize claude if no event for idle_timeout_seconds.
-    # Without this a stalled API call hangs synthesize forever (files may
-    # already be written, so killing is safe — finalize will validate them).
-    last_event = [time.monotonic()]
+    # Wall-clock watchdog: kill synthesize claude after idle_timeout_seconds
+    # regardless of event flow. deepseek streams thinking_tokens slowly, so an
+    # idle (no-event) timeout never fires; a hard wall-clock cap (default 300s)
+    # guarantees synthesize can't hang. Files are written as side effects well
+    # before the cap, so killing is safe — finalize will validate them.
+    deadline = time.monotonic() + idle_timeout_seconds
     stop = threading.Event()
 
     def watchdog():
         while not stop.wait(5):
-            if time.monotonic() - last_event[0] > idle_timeout_seconds:
+            if time.monotonic() > deadline:
                 try:
                     drv._proc.terminate()
                 except Exception:
@@ -119,7 +121,7 @@ def synthesize(
     wd.start()
     # consume all events (claude writes files as tool_use side effects)
     for _ev in drv.events():
-        last_event[0] = time.monotonic()
+        pass
     stop.set()
     drv.close()
     return finalize_task_dir(temp_dir, tasks_root)

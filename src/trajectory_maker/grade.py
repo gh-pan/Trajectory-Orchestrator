@@ -156,16 +156,17 @@ def grade_checklist(
         model=meta_model(),
     )
     drv.send_user_message(system + "\n\n" + user)
-    # Watchdog: kill the judge if no event for 240s (deepseek can stall on a
-    # single API call). No judge should take minutes for a read-only check.
+    # Wall-clock watchdog: kill the judge after 180s regardless of event flow.
+    # deepseek streams thinking_tokens slowly, so an idle (no-event) timeout
+    # never fires; a hard wall-clock cap guarantees the judge can't hang grade.
     import threading
     import time
-    last_event = [time.monotonic()]
+    deadline = time.monotonic() + 180
     stop = threading.Event()
 
     def watchdog():
         while not stop.wait(5):
-            if time.monotonic() - last_event[0] > 240:
+            if time.monotonic() > deadline:
                 try:
                     drv._proc.terminate()
                 except Exception:
@@ -177,7 +178,6 @@ def grade_checklist(
     result_text = ""
     try:
         for ev in drv.events():
-            last_event[0] = time.monotonic()
             if ev.get("type") == "result":
                 result_text = ev.get("result", "")
     finally:
