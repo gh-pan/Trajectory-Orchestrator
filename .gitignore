@@ -29,3 +29,7 @@ _judge_log/
 .DS_Store
 .idea/
 .vscode/
+
+# Claude config runtime artifacts (sessions, projects, etc. — only settings.json template tracked)
+.claude-config/
+!.claude-config/settings.json.template
