@@ -62,13 +62,22 @@ def _write_final_score(out_dir: Path, task_id: str, run_id: str, termination: st
 
 
 def _write_expected_env(out_dir: Path, task_dir: Path, spec: TaskSpec) -> None:
+    """The EXPECTED final environment: what the workspace should look like after
+    the agent runs. This is a description (+ optional reference patch), NOT the
+    grading scripts — rubrics are grading tools, not part of the expected env."""
     exp = out_dir / "expected_final_env"
     exp.mkdir(parents=True, exist_ok=True)
     (exp / "description.txt").write_text(spec.expected_final_env.description)
     if spec.expected_final_env.reference_patch:
         (exp / "reference_patch.diff").write_text(spec.expected_final_env.reference_patch)
-    rub_dir = exp / "rubrics"
-    rub_dir.mkdir(exist_ok=True)
+
+
+def _write_rubrics(out_dir: Path, task_dir: Path, spec: TaskSpec) -> None:
+    """Top-level rubrics/ : the grading tools (script files + checklist
+    definitions). Separate from expected_final_env — these judge the outcome,
+    they are not the expected environment itself."""
+    rub_dir = out_dir / "rubrics"
+    rub_dir.mkdir(parents=True, exist_ok=True)
     src_rub = task_dir / "rubrics"
     if src_rub.is_dir():
         for f in src_rub.iterdir():
@@ -108,17 +117,20 @@ def package_run(
     else:
         (out_dir / "actual_final_env").mkdir()
 
-    # expected env
+    # expected env (description + reference patch only — NOT rubrics)
     _write_expected_env(out_dir, task_dir, task_spec)
+
+    # rubrics (grading tools, top-level — separate from expected env)
+    _write_rubrics(out_dir, task_dir, task_spec)
 
     # sanitized trajectory
     raw = work_dir / "trajectory_raw.jsonl"
     rules = load_rules()
     sanitize_jsonl(raw, out_dir / "trajectory.jsonl", rules)
 
-    # integrity check: 6 entries
+    # integrity check: 7 entries
     entries = [p.name for p in out_dir.iterdir()]
-    assert len(entries) == 6, f"expected 6 entries, got {entries}"
+    assert len(entries) == 7, f"expected 7 entries, got {entries}"
 
     # index
     index_line = {

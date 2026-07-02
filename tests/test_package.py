@@ -58,7 +58,7 @@ def test_package_run_creates_six_entries(tmp_path):
     assert (out_dir / "actual_final_env").is_dir()
     assert (out_dir / "trajectory.jsonl").exists()
     entries = [p.name for p in out_dir.iterdir()]
-    assert len(entries) == 6
+    assert len(entries) == 7
 
 
 def test_package_run_writes_index(tmp_path):
