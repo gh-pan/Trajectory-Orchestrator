@@ -48,9 +48,12 @@ class DockerClient:
         cpus: str = "2",
         workspace_host_path: str | None = None,
         workspace_container_path: str = "/workspace",
+        add_hosts: list[str] | None = None,
     ) -> str:
         args = ["run", "-d", "--name", container_name]
         args += ["--memory", memory, "--cpus", cpus]
+        for h in add_hosts or []:
+            args += ["--add-host", h]
         if workspace_host_path:
             args += ["-v", f"{workspace_host_path}:{workspace_container_path}"]
         args.append(image_tag)

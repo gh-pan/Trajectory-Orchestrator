@@ -7,6 +7,7 @@ secret_env_keys:
   - SECRET
   - TOKEN
   - PASSWORD
+  - DEVICE_ID
 
 # 凭证：正则模式（匹配即替换为 <redacted>）
 secret_patterns:
@@ -37,3 +38,14 @@ remove_metadata_fields:
 # 元数据：需要规范化的字段
 normalize_metadata:
   cwd: '/workspace'
+
+# 不露馅：剔除任何机器注入/采集系统痕迹字面（出现在 messages/system/response 文本里）
+# 这些是编排器/采集系统的内部词，真人对话里不该出现
+leak_patterns:
+  - 'user-?agent'
+  - 'user_?reactor'
+  - 'recording.?proxy'
+  - 'raw_calls'
+  - 'claude_raw_calls'
+  - 'host\.docker\.internal'
+  - 'host-gateway'

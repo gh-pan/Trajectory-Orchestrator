@@ -15,6 +15,8 @@ class SanitizeRules:
     path_replacements: list[dict]
     remove_metadata_fields: list[str]
     normalize_metadata: dict[str, str]
+    leak_patterns: list[str] = field(default_factory=list)
+    _compiled_leaks: list[re.Pattern] = field(default_factory=list, repr=False)
     _compiled_secrets: list[re.Pattern] = field(default_factory=list, repr=False)
     _compiled_paths: list[tuple[re.Pattern, str]] = field(default_factory=list, repr=False)
 
@@ -26,6 +28,7 @@ class SanitizeRules:
         self._compiled_paths = [
             (re.compile(r["pattern"]), r["replacement"]) for r in self.path_replacements
         ]
+        self._compiled_leaks = [re.compile(p, re.IGNORECASE) for p in self.leak_patterns]
 
 
 @dataclass
@@ -45,6 +48,7 @@ def load_rules(path: Path | None = None) -> SanitizeRules:
         path_replacements=data["path_replacements"],
         remove_metadata_fields=data["remove_metadata_fields"],
         normalize_metadata=data.get("normalize_metadata", {}),
+        leak_patterns=data.get("leak_patterns", []),
     )
 
 
@@ -60,6 +64,13 @@ def _normalize_paths(text: str, rules: SanitizeRules) -> str:
     return text
 
 
+def _redact_leaks(text: str, rules: SanitizeRules) -> str:
+    """Blank out machine/collector jargon that would betray programmatic injection."""
+    for pat in rules._compiled_leaks:
+        text = pat.sub("<redacted>", text)
+    return text
+
+
 def _scrub(obj, rules: SanitizeRules):
     """Recursively redact secrets + normalize paths in all string values; scrub metadata fields."""
     if isinstance(obj, dict):
@@ -71,6 +82,7 @@ def _scrub(obj, rules: SanitizeRules):
     if isinstance(obj, str):
         s = _redact_secrets(obj, rules)
         s = _normalize_paths(s, rules)
+        s = _redact_leaks(s, rules)
         return s
     return obj
 
@@ -116,3 +128,30 @@ def sanitize_jsonl(in_path: Path, out_path: Path, rules: SanitizeRules) -> Sanit
     if remaining:
         raise RuntimeError(f"sanitize self-check failed: {len(remaining)} secrets remain")
     return report
+
+
+def sanitize_req_file(in_path: Path, out_path: Path, rules: SanitizeRules) -> None:
+    """Sanitize one req_*.json record (spec 09 structure) in place."""
+    rec = json.loads(in_path.read_text(encoding="utf-8"))
+    rec = _scrub(rec, rules)
+    # device_id inside metadata.user_id (a JSON-encoded string) — redact its value
+    req = rec.get("request", {})
+    meta = req.get("metadata")
+    if isinstance(meta, dict) and isinstance(meta.get("user_id"), str):
+        try:
+            uid = json.loads(meta["user_id"])
+            if isinstance(uid, dict) and "device_id" in uid:
+                uid["device_id"] = "<redacted>"
+            meta["user_id"] = json.dumps(uid, ensure_ascii=False)
+        except (json.JSONDecodeError, ValueError):
+            meta["user_id"] = "<redacted>"
+    out_path.write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
+
+
+def sanitize_req_dir(req_dir: Path, rules: SanitizeRules) -> int:
+    """Sanitize every req_*.json in a session directory (in place). Returns count."""
+    n = 0
+    for f in sorted(req_dir.glob("req_*.json")):
+        sanitize_req_file(f, f, rules)
+        n += 1
+    return n

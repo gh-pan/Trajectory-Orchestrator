@@ -9,7 +9,8 @@ import yaml
 
 from .grade import RubricResult, ScoreSummary
 from .models import TaskSpec
-from .sanitize import load_rules, sanitize_jsonl
+from .convert import convert_dir
+from .sanitize import load_rules, sanitize_jsonl, sanitize_req_dir
 
 
 def build_metadata(
@@ -148,4 +149,78 @@ def package_run(
     with (data_root / "index.jsonl").open("a") as f:
         f.write(json.dumps(index_line, ensure_ascii=False) + "\n")
 
+    return out_dir
+
+
+def build_metadata_multiturn(
+    spec, run_id: str, session_id: str, endpoint: str, model: str,
+    started_at: str, ended_at: str, termination: str,
+    max_turns: int, timeout_seconds: int, injected_turns: int,
+    claude_version: str, docker_base: str,
+) -> dict:
+    md = build_metadata(spec, run_id, endpoint, model, started_at, ended_at,
+                        termination, max_turns, timeout_seconds, claude_version, docker_base)
+    md["run"]["session_id"] = session_id
+    md["run"]["injected_turns"] = injected_turns
+    md["run"]["capture_mode"] = "api_call_level"
+    md["schema_version"] = 2
+    return md
+
+
+def package_run_multiturn(
+    task_spec, run_id: str, session_id: str, endpoint: str, model: str,
+    started_at: str, ended_at: str, termination: str,
+    max_turns: int, timeout_seconds: int, injected_turns: int,
+    claude_version: str, docker_base: str,
+    work_dir: Path, data_root: Path, task_dir: Path,
+    rubric_results, summary,
+) -> Path:
+    out_dir = data_root / task_spec.task_id / run_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    md = build_metadata_multiturn(task_spec, run_id, session_id, endpoint, model, started_at,
+                                  ended_at, termination, max_turns, timeout_seconds, injected_turns,
+                                  claude_version, docker_base)
+    (out_dir / "metadata.yaml").write_text(yaml.safe_dump(md, allow_unicode=True, sort_keys=False))
+    _write_final_score(out_dir, task_spec.task_id, run_id, termination, rubric_results, summary)
+
+    if (work_dir / "initial_env").exists():
+        shutil.copytree(work_dir / "initial_env", out_dir / "initial_env", dirs_exist_ok=True)
+    else:
+        (out_dir / "initial_env").mkdir()
+    if (task_dir / "Dockerfile").exists():
+        shutil.copy2(task_dir / "Dockerfile", out_dir / "initial_env" / "Dockerfile")
+    if (work_dir / "actual_final_env").exists():
+        shutil.copytree(work_dir / "actual_final_env", out_dir / "actual_final_env", dirs_exist_ok=True)
+    else:
+        (out_dir / "actual_final_env").mkdir()
+    _write_expected_env(out_dir, task_dir, task_spec)
+    _write_rubrics(out_dir, task_dir, task_spec)
+
+    # API-call-level trajectory: convert raw_calls -> req_<uuid>.json under <session_id>/
+    raw_calls = work_dir / "raw_calls"
+    req_dir = out_dir / session_id
+    if raw_calls.is_dir():
+        convert_dir(raw_calls, req_dir, session_id)
+        sanitize_req_dir(req_dir, load_rules())
+    else:
+        req_dir.mkdir(parents=True, exist_ok=True)
+
+    # raw stream-json events log (debug/audit; not the deliverable format)
+    if (work_dir / "events.jsonl").exists():
+        shutil.copy2(work_dir / "events.jsonl", out_dir / "events.jsonl")
+
+    # integrity check: 8 entries (metadata, final_score, initial_env, actual_final_env,
+    # expected_final_env, rubrics, <session_id>/, events.jsonl)
+    entries = [p.name for p in out_dir.iterdir()]
+    assert len(entries) == 8, f"expected 8 entries, got {entries}"
+
+    index_line = {
+        "task_id": task_spec.task_id, "run_id": run_id, "session_id": session_id,
+        "category": task_spec.category, "score": summary.score,
+        "verdict": summary.verdict, "termination": termination,
+        "injected_turns": injected_turns, "path": str(out_dir),
+    }
+    with (data_root / "index.jsonl").open("a") as f:
+        f.write(json.dumps(index_line, ensure_ascii=False) + "\n")
     return out_dir

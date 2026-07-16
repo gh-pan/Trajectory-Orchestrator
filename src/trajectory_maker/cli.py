@@ -57,8 +57,8 @@ def run(
     apikey: str = typer.Option(..., "--apikey"),
     model: str = typer.Option(..., "--model"),
     output: Path = typer.Option(Path("./dataset"), "--output", "-o"),
-    max_turns: int = typer.Option(1, "--max-turns"),
-    timeout: int = typer.Option(1800, "--timeout"),
+    max_turns: int = typer.Option(20, "--max-turns", help="max user-injected turns (long-chain budget)"),
+    timeout: int = typer.Option(3600, "--timeout"),
     idle_timeout: int = typer.Option(300, "--idle-timeout", help="kill agent if no event for N seconds"),
     keep: bool = typer.Option(False, "--keep"),
 ) -> None:

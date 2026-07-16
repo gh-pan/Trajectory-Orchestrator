@@ -38,6 +38,7 @@ class Driver:
         system_prompt: str | None = None,
         model: str | None = None,
         env: dict[str, str] | None = None,
+        cwd: str | None = None,
     ) -> "Driver":
         args = [
             "claude",
@@ -62,6 +63,7 @@ class Driver:
             text=True,
             bufsize=1,
             env=env,
+            cwd=cwd,
         )
         return cls(proc)
 
