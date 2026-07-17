@@ -39,6 +39,26 @@ def test_auth_error_takes_precedence():
     assert detect_termination(events) == "auth_error"
 
 
+def test_error_result_envelope_is_crashed():
+    events = [{
+        "type": "result",
+        "subtype": "error_during_execution",
+        "is_error": True,
+        "result": "tool failed",
+    }]
+    assert detect_termination(events) == "crashed"
+
+
+def test_auth_error_result_envelope_is_auth_error():
+    events = [{
+        "type": "result",
+        "subtype": "error_during_execution",
+        "is_error": True,
+        "result": "authentication failed",
+    }]
+    assert detect_termination(events) == "auth_error"
+
+
 def test_completion_phrases_cover_multilingual():
     for phrase in ["完成", "已完成", "任务完成", "完成了", "finished", "done", "all done", "complete", "completed"]:
         events = [_assistant(phrase), _result()]

@@ -40,6 +40,31 @@ def _new_request_id() -> str:
     return "req_" + uuid.uuid4().hex
 
 
+def _add_thinking_display(body_bytes: bytes, display: str | None) -> bytes:
+    """Request summarized adaptive thinking when the client omitted a display mode.
+
+    Claude Code 2.1.x sends ``{"type": "adaptive"}`` for some third-party
+    endpoints.  Those endpoints may then return a signed thinking block with an
+    empty ``thinking`` string.  Adding the same display mode used by the native
+    trajectory samples makes the provider return the textual summary as well.
+    """
+    if not body_bytes or not display:
+        return body_bytes
+    try:
+        body = json.loads(body_bytes)
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+        return body_bytes
+    if not isinstance(body, dict):
+        return body_bytes
+    thinking = body.get("thinking")
+    if not isinstance(thinking, dict) or thinking.get("type") != "adaptive":
+        return body_bytes
+    if thinking.get("display"):
+        return body_bytes
+    body["thinking"] = {**thinking, "display": display}
+    return json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
 class _ProxyHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     # silence default stderr access logging (we run embedded)
@@ -61,6 +86,11 @@ class _ProxyHandler(BaseHTTPRequestHandler):
     def _handle(self, record: bool) -> None:
         length = int(self.headers.get("Content-Length", 0) or 0)
         body_bytes = self.rfile.read(length) if length else b""
+        if record:
+            body_bytes = _add_thinking_display(
+                body_bytes,
+                self._proxy.thinking_display,
+            )
 
         request_id = _new_request_id() if record else None
         req_timestamp = time.time()
@@ -78,12 +108,20 @@ class _ProxyHandler(BaseHTTPRequestHandler):
             fwd_headers[k] = v
 
         resp = None
+        conn = None
         try:
             conn = conn_cls(real.hostname, real.port or (443 if real.scheme == "https" else 80),
                             timeout=self._proxy.timeout)
+            self._proxy._add_connection(conn)
             conn.request(self.command, forward_path, body=body_bytes, headers=fwd_headers)
             resp = conn.getresponse()
         except Exception as exc:
+            if conn is not None:
+                self._proxy._remove_connection(conn)
+                try:
+                    conn.close()
+                except Exception:
+                    pass
             self._send_error(502, f"upstream connect failed: {exc}")
             return
 
@@ -115,9 +153,19 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                 conn.close()
             except Exception:
                 pass
-
-        if record and request_id is not None:
-            self._record(request_id, req_timestamp, body_bytes, resp, chunks, fwd_headers, sent_headers)
+        try:
+            if record and request_id is not None:
+                self._record(
+                    request_id,
+                    req_timestamp,
+                    body_bytes,
+                    resp,
+                    chunks,
+                    fwd_headers,
+                    sent_headers,
+                )
+        finally:
+            self._proxy._remove_connection(conn)
 
     def _send_error(self, code: int, msg: str) -> None:
         body = msg.encode()
@@ -129,6 +177,8 @@ class _ProxyHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _record(self, request_id, req_ts, body_bytes, resp, chunks, fwd_headers, sent_headers) -> None:
+        if self._proxy._stopping.is_set():
+            return
         # parse request body if JSON
         try:
             body_obj = json.loads(body_bytes) if body_bytes else None
@@ -155,26 +205,37 @@ class _ProxyHandler(BaseHTTPRequestHandler):
         }
         # atomic-ish write: one file per pair
         out = self._proxy.raw_calls_dir / f"{request_id}.jsonl"
-        out.parent.mkdir(parents=True, exist_ok=True)
-        with out.open("w", encoding="utf-8") as f:
-            f.write(json.dumps(pair, ensure_ascii=False) + "\n")
-        self._proxy._recorded.append(request_id)
+        with self._proxy._record_lock:
+            if self._proxy._stopping.is_set():
+                return
+            out.parent.mkdir(parents=True, exist_ok=True)
+            with out.open("w", encoding="utf-8") as f:
+                f.write(json.dumps(pair, ensure_ascii=False) + "\n")
+            self._proxy._recorded.append(request_id)
 
 
 class RecordingProxy:
     """A local plain-HTTP proxy that records /v1/messages calls."""
 
     def __init__(self, real_base_url: str, raw_calls_dir: Path,
-                 host: str = "127.0.0.1", port: int = 0, timeout: float = 600.0):
+                 host: str = "127.0.0.1", port: int = 0, timeout: float = 600.0,
+                 thinking_display: str | None = None):
         self.real_url = urlparse(real_base_url)
         if not self.real_url.scheme or not self.real_url.hostname:
             raise ValueError(f"invalid real_base_url: {real_base_url}")
         self.raw_calls_dir = Path(raw_calls_dir)
         self.timeout = timeout
+        self.thinking_display = thinking_display
         self._server = ThreadingHTTPServer((host, port), _ProxyHandler)
+        self._server.daemon_threads = True
+        self._server.block_on_close = False
         self._server.proxy = self  # type: ignore[attr-defined]
         self._thread: threading.Thread | None = None
         self._recorded: list[str] = []
+        self._connections: set[http.client.HTTPConnection] = set()
+        self._connections_lock = threading.Lock()
+        self._record_lock = threading.Lock()
+        self._stopping = threading.Event()
 
     @property
     def port(self) -> int:
@@ -191,12 +252,43 @@ class RecordingProxy:
 
     def start(self) -> str:
         self.raw_calls_dir.mkdir(parents=True, exist_ok=True)
+        self._stopping.clear()
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
         return self.base_url
 
     def stop(self) -> None:
+        self._stopping.set()
+        with self._connections_lock:
+            connections = list(self._connections)
+        for conn in connections:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        with self._record_lock:
+            pass
         self._server.shutdown()
         self._server.server_close()
         if self._thread:
             self._thread.join(timeout=5)
+
+    def wait_for_idle(self, timeout: float = 5.0) -> bool:
+        """Wait until active upstream requests have finished recording."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            with self._connections_lock:
+                active = bool(self._connections)
+            if not active:
+                with self._record_lock:
+                    return True
+            time.sleep(0.01)
+        return False
+
+    def _add_connection(self, conn: http.client.HTTPConnection) -> None:
+        with self._connections_lock:
+            self._connections.add(conn)
+
+    def _remove_connection(self, conn: http.client.HTTPConnection) -> None:
+        with self._connections_lock:
+            self._connections.discard(conn)

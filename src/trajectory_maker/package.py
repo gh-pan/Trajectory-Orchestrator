@@ -10,7 +10,12 @@ import yaml
 from .grade import RubricResult, ScoreSummary
 from .models import TaskSpec
 from .convert import convert_dir
-from .sanitize import load_rules, sanitize_jsonl, sanitize_req_dir
+from .sanitize import (
+    load_rules,
+    sanitize_json_record_dir,
+    sanitize_jsonl,
+    sanitize_req_dir,
+)
 
 
 def build_metadata(
@@ -174,6 +179,8 @@ def package_run_multiturn(
     claude_version: str, docker_base: str,
     work_dir: Path, data_root: Path, task_dir: Path,
     rubric_results, summary,
+    secret_values: list[str] | None = None,
+    path_mappings: dict[str, str] | None = None,
 ) -> Path:
     out_dir = data_root / task_spec.task_id / run_id
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -200,15 +207,19 @@ def package_run_multiturn(
     # API-call-level trajectory: convert raw_calls -> req_<uuid>.json under <session_id>/
     raw_calls = work_dir / "raw_calls"
     req_dir = out_dir / session_id
+    rules = load_rules(secret_values=secret_values, path_mappings=path_mappings)
     if raw_calls.is_dir():
+        # ``--keep`` may retain work_dir.  Scrub raw request/response pairs
+        # before conversion so even a conversion failure cannot leave a key.
+        sanitize_json_record_dir(raw_calls, rules)
         convert_dir(raw_calls, req_dir, session_id)
-        sanitize_req_dir(req_dir, load_rules())
+        sanitize_req_dir(req_dir, rules)
     else:
         req_dir.mkdir(parents=True, exist_ok=True)
 
-    # raw stream-json events log (debug/audit; not the deliverable format)
+    # stream-json events log (debug/audit; sanitize it just like req records)
     if (work_dir / "events.jsonl").exists():
-        shutil.copy2(work_dir / "events.jsonl", out_dir / "events.jsonl")
+        sanitize_jsonl(work_dir / "events.jsonl", out_dir / "events.jsonl", rules)
 
     # integrity check: 8 entries (metadata, final_score, initial_env, actual_final_env,
     # expected_final_env, rubrics, <session_id>/, events.jsonl)

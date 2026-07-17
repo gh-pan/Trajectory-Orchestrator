@@ -31,6 +31,7 @@ class _FakeAnthropicHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+        self.server.received_body = body
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Transfer-Encoding", "chunked")
@@ -50,11 +51,14 @@ def _start_fake_endpoint() -> tuple[str, ThreadingHTTPServer]:
     return f"http://127.0.0.1:{port}", srv
 
 
-def _send_messages(base_url: str, messages: list, apikey: str = "sk-secret") -> tuple[int, str]:
+def _send_messages(base_url: str, messages: list, apikey: str = "sk-secret",
+                   extra: dict | None = None) -> tuple[int, str]:
     import http.client
     u = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(base_url)
     conn = http.client.HTTPConnection(u.hostname, u.port)
-    body = json.dumps({"model": "m", "messages": messages, "stream": True})
+    payload = {"model": "m", "messages": messages, "stream": True}
+    payload.update(extra or {})
+    body = json.dumps(payload)
     conn.request("POST", "/v1/messages", body=body,
                  headers={"Content-Type": "application/json",
                           "x-api-key": apikey,
@@ -69,10 +73,13 @@ def test_proxy_records_pair_and_forwards_sse(tmp_path: Path):
     real_url, fake_srv = _start_fake_endpoint()
     try:
         proxy = RecordingProxy(real_url, tmp_path / "raw_calls")
+        assert proxy._server.daemon_threads is True
+        assert proxy._server.block_on_close is False
         proxy.start()
         try:
             status, body = _send_messages(proxy.base_url,
                                           [{"role": "user", "content": "ping"}])
+            assert proxy.wait_for_idle(timeout=1)
             assert status == 200
             # SSE forwarded intact
             assert "message_start" in body
@@ -123,6 +130,43 @@ def test_proxy_forwards_apikey_to_upstream(tmp_path: Path):
             proxy.stop()
     finally:
         srv.shutdown()
+
+
+def test_proxy_adds_summarized_adaptive_thinking_to_forwarded_and_recorded_request(
+    tmp_path: Path,
+):
+    real_url, fake_srv = _start_fake_endpoint()
+    try:
+        proxy = RecordingProxy(
+            real_url,
+            tmp_path / "raw_calls",
+            thinking_display="summarized",
+        )
+        proxy.start()
+        try:
+            status, _ = _send_messages(
+                proxy.base_url,
+                [{"role": "user", "content": "think"}],
+                extra={"thinking": {"type": "adaptive"}},
+            )
+            assert proxy.wait_for_idle(timeout=1)
+            assert status == 200
+            assert fake_srv.received_body["thinking"] == {
+                "type": "adaptive",
+                "display": "summarized",
+            }
+            rid = proxy.recorded_request_ids[0]
+            pair = json.loads(
+                (tmp_path / "raw_calls" / f"{rid}.jsonl").read_text()
+            )
+            assert pair["request"]["body"]["thinking"] == {
+                "type": "adaptive",
+                "display": "summarized",
+            }
+        finally:
+            proxy.stop()
+    finally:
+        fake_srv.shutdown()
 
 
 def test_proxy_only_records_v1_messages(tmp_path: Path):

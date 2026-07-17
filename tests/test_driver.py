@@ -100,6 +100,70 @@ def test_local_backend_builds_correct_command(monkeypatch):
     assert "--model" in args and "claude-sonnet-4-6" in args
 
 
+def test_local_backend_supports_isolated_bare_sandbox_options(monkeypatch):
+    captured = {}
+
+    class FakePopen:
+        stderr = None
+
+        def __init__(self, args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+
+    monkeypatch.setattr("trajectory_maker.driver.subprocess.Popen", FakePopen)
+    Driver.local(
+        add_dirs=["/tmp/workspace"],
+        tools=["Read", "Write", "Bash"],
+        allowed_tools=["Read", "Write", "Bash"],
+        model="claude-opus-4-8",
+        effort="xhigh",
+        permission_mode="acceptEdits",
+        settings={"sandbox": {"enabled": True}},
+        bare=True,
+        no_session_persistence=True,
+        cwd="/tmp/workspace",
+        env={"PATH": "/usr/bin", "ANTHROPIC_API_KEY": "sentinel-key"},
+    )
+
+    args = captured["args"]
+    assert "--bare" in args
+    assert "--no-session-persistence" in args
+    assert args[args.index("--tools") + 1:args.index("--add-dir")] == [
+        "Read", "Write", "Bash",
+    ]
+    assert args[args.index("--effort") + 1] == "xhigh"
+    assert args[args.index("--permission-mode") + 1] == "acceptEdits"
+    settings = json.loads(args[args.index("--settings") + 1])
+    assert settings["sandbox"]["enabled"] is True
+    assert captured["kwargs"]["cwd"] == "/tmp/workspace"
+    assert "sentinel-key" not in json.dumps(args)
+    if sys.platform != "win32":
+        assert captured["kwargs"]["start_new_session"] is True
+
+
+def test_driver_kill_terminates_local_process_group(monkeypatch):
+    calls = {}
+
+    class FakeProc:
+        pid = 1234
+        stderr = None
+
+        def kill(self):
+            calls["fallback_kill"] = True
+
+    monkeypatch.setattr("trajectory_maker.driver.os.getpgid", lambda pid: 4321)
+    monkeypatch.setattr(
+        "trajectory_maker.driver.os.killpg",
+        lambda pgid, sig: calls.update({"pgid": pgid, "signal": sig}),
+    )
+    driver = Driver(FakeProc(), kill_process_group=True)
+    driver.kill()
+
+    assert calls["pgid"] == 4321
+    assert calls["signal"] == __import__("signal").SIGKILL
+    assert "fallback_kill" not in calls
+
+
 def test_docker_backend_uses_exec_pipes(monkeypatch):
     calls = {}
 

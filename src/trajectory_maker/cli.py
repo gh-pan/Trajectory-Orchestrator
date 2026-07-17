@@ -1,5 +1,6 @@
 """CLI entry point for trajectory-maker."""
 
+from enum import Enum
 from pathlib import Path
 
 import typer
@@ -7,6 +8,19 @@ import typer
 from .docker import DockerClient
 
 app = typer.Typer(help="Trajectory Maker — synthesize, verify, and record agent trajectories.", no_args_is_help=True)
+
+
+class WorkflowRuntime(str, Enum):
+    docker = "docker"
+    local = "local"
+
+
+class ClaudeEffort(str, Enum):
+    low = "low"
+    medium = "medium"
+    high = "high"
+    xhigh = "xhigh"
+    max = "max"
 
 
 def clean_all_containers() -> dict:
@@ -67,6 +81,57 @@ def run(
     out = do_run(task_dir, endpoint=endpoint, apikey=apikey, model=model,
                  output=output, max_turns=max_turns, timeout_seconds=timeout,
                  idle_timeout_seconds=idle_timeout, keep=keep)
+    typer.echo(f"packaged -> {out}")
+
+
+@app.command(name="run-workflow")
+def run_workflow_command(
+    case_or_workflow: Path = typer.Argument(
+        ..., help="case directory containing workflow.json, or the workflow file itself"
+    ),
+    runtime: WorkflowRuntime = typer.Option(
+        WorkflowRuntime.docker,
+        "--runtime",
+        help="execution backend: Docker isolation or local Claude Code",
+    ),
+    endpoint: str | None = typer.Option(
+        None, "--endpoint", help="provider base URL; defaults to subject/Anthropic env"
+    ),
+    apikey: str | None = typer.Option(
+        None, "--apikey", help="provider key; prefer AIHUBMIX_API_KEY or ANTHROPIC_AUTH_TOKEN"
+    ),
+    model: str = typer.Option(
+        "claude-opus-4-8", "--model", help="subject model (default: Claude Opus 4.8)"
+    ),
+    effort: ClaudeEffort = typer.Option(
+        ClaudeEffort.xhigh, "--effort", help="Claude reasoning effort (local runtime)"
+    ),
+    output: Path = typer.Option(Path("./dataset"), "--output", "-o"),
+    task_id: str | None = typer.Option(
+        None, "--task-id", help="output task id (defaults to the case directory name)"
+    ),
+    timeout: int = typer.Option(3600, "--timeout", help="whole workflow wall-clock timeout"),
+    idle_timeout: int = typer.Option(
+        300, "--idle-timeout", help="kill the subject after N seconds without an event"
+    ),
+    keep: bool = typer.Option(False, "--keep"),
+) -> None:
+    """Run preset workflow.json turns in one persistent Claude session."""
+    from .workflow import run_workflow as do_run_workflow
+
+    out = do_run_workflow(
+        case_or_workflow,
+        endpoint=endpoint,
+        apikey=apikey,
+        model=model,
+        output=output,
+        task_id=task_id,
+        timeout_seconds=timeout,
+        idle_timeout_seconds=idle_timeout,
+        keep=keep,
+        runtime=runtime.value,
+        effort=effort.value,
+    )
     typer.echo(f"packaged -> {out}")
 
 

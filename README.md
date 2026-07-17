@@ -21,10 +21,37 @@ trajectory-maker synthesize <input-folder> --output ./tasks
 trajectory-maker verify ./tasks/<task_id> --endpoint ... --model ...
 trajectory-maker run ./tasks/<task_id> --endpoint ... --apikey ... --model ... --output ./dataset
 
+# 按 workflow.json 的预设用户轮次顺序执行（同一容器、同一会话）
+trajectory-maker run-workflow ../case_1 \
+  --endpoint <base_url> --apikey <key> --model <model_id> \
+  --output ./dataset
+
+# 轻量本地模式：使用本机 Claude Code + Aihubmix，默认 Opus 4.8 / xhigh
+export ANTHROPIC_BASE_URL="https://你的-aihubmix-endpoint"
+export ANTHROPIC_AUTH_TOKEN="你的-aihubmix-key"
+trajectory-maker run-workflow ../case_1 \
+  --runtime local --model claude-opus-4-8 --effort xhigh \
+  --output ./dataset
+
 # 清理残留容器/镜像
 trajectory-maker clean --all
 trajectory-maker clean --task <task_id>
 ```
+
+`run-workflow` 接受 case 目录或 `workflow.json` 文件路径。文件顶层应为非空数组，
+每个元素使用 `TaskSpec` 结构；其中的 `initial_instruction` 会按数组顺序逐轮注入。
+所有轮次必须声明同一个 workspace 和 Docker 环境。若 case 中没有声明的 Dockerfile，
+命令会在临时构建副本中生成默认 Dockerfile，不会修改原始 workspace。最终仍输出
+现有的 `<session_id>/req_<uuid>.json`、`events.jsonl`、环境快照和评分文件。
+
+`--runtime local` 不需要 Docker：它调用 PATH 中的本机 `claude`，在 workspace 的临时
+副本中依次执行所有轮次，并继续通过本地录制代理生成相同格式的 trajectory。默认模型
+固定为 `claude-opus-4-8`。凭证按“命令行参数 → `TM_SUBJECT_*` →
+`AIHUBMIX_API_KEY` → `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY`”读取，只进入子进程
+环境，不写入代码或输出；推荐使用环境变量，避免 key 出现在 shell 历史中。本地进程使用
+`--bare`、禁用会话落盘并开启 Claude Bash sandbox，但隔离强度仍低于 Docker，只应运行
+可信的 case。当前本地模式支持无 rubric 的 workflow；带 rubric 的任务请继续使用 Docker。
+为避免在宿主机裸执行任意初始化脚本，本地模式同样会拒绝声明了 `init_script` 的 workflow。
 
 ## run 阶段：多轮注入 + API 调用层采集
 

@@ -38,14 +38,36 @@ class SanitizeReport:
     secrets_redacted: int = 0
 
 
-def load_rules(path: Path | None = None) -> SanitizeRules:
+def load_rules(
+    path: Path | None = None,
+    secret_values: list[str] | None = None,
+    path_mappings: dict[str, str] | None = None,
+) -> SanitizeRules:
+    """Load static rules plus per-run exact secrets and path mappings.
+
+    Per-run values are kept in memory only.  Exact path mappings are inserted
+    before broad host-path rules so a temporary local workspace normalizes all
+    the way back to ``/workspace`` rather than merely ``/home/user/...``.
+    """
     if path is None:
         path = Path(__file__).parent / "resources" / "sanitize_rules.yaml"
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    dynamic_secrets = [
+        re.escape(value)
+        for value in (secret_values or [])
+        if isinstance(value, str) and value
+    ]
+    dynamic_paths = [
+        {"pattern": re.escape(source), "replacement": replacement}
+        for source, replacement in sorted(
+            (path_mappings or {}).items(), key=lambda item: len(item[0]), reverse=True
+        )
+        if source
+    ]
     return SanitizeRules(
         secret_env_keys=data["secret_env_keys"],
-        secret_patterns=data["secret_patterns"],
-        path_replacements=data["path_replacements"],
+        secret_patterns=[*dynamic_secrets, *data["secret_patterns"]],
+        path_replacements=[*dynamic_paths, *data["path_replacements"]],
         remove_metadata_fields=data["remove_metadata_fields"],
         normalize_metadata=data.get("normalize_metadata", {}),
         leak_patterns=data.get("leak_patterns", []),
@@ -155,3 +177,22 @@ def sanitize_req_dir(req_dir: Path, rules: SanitizeRules) -> int:
         sanitize_req_file(f, f, rules)
         n += 1
     return n
+
+
+def sanitize_json_record_dir(record_dir: Path, rules: SanitizeRules) -> int:
+    """Sanitize line-delimited JSON records in place (used for kept raw calls)."""
+    count = 0
+    if not record_dir.is_dir():
+        return count
+    for path in sorted(record_dir.glob("*.jsonl")):
+        clean_lines: list[str] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            clean_lines.append(json.dumps(_scrub(json.loads(line), rules), ensure_ascii=False))
+        path.write_text(
+            "\n".join(clean_lines) + ("\n" if clean_lines else ""),
+            encoding="utf-8",
+        )
+        count += 1
+    return count

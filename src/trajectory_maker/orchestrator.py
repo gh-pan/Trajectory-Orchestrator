@@ -21,6 +21,16 @@ def has_completion_phrase(text: str) -> bool:
     return _has_completion_phrase(text)
 
 
+def is_error_result(event: dict) -> bool:
+    """Return True for Claude ``result`` envelopes that represent a failed turn."""
+    if event.get("type") != "result":
+        return False
+    if event.get("is_error") is True:
+        return True
+    subtype = str(event.get("subtype", "")).lower()
+    return subtype.startswith("error") or subtype in {"failed", "failure"}
+
+
 def detect_termination(
     events: list[dict],
     timeout: bool = False,
@@ -28,9 +38,10 @@ def detect_termination(
 ) -> Termination:
     """Classify how a run ended from its collected events."""
     for ev in events:
-        if ev.get("type") == "error":
+        if ev.get("type") == "error" or is_error_result(ev):
             etype = ev.get("error", {}).get("type", "")
-            if "auth" in etype.lower():
+            error_text = f"{etype} {ev.get('result', '')}".lower()
+            if "auth" in error_text:
                 return "auth_error"
             return "crashed"
     has_result = any(ev.get("type") == "result" for ev in events)
@@ -75,6 +86,9 @@ def run_loop(
             stop_reason = "error"
             break
         if etype == "result":
+            if is_error_result(ev):
+                stop_reason = "error"
+                break
             last_text = last_assistant_text(events) or ""
             if has_completion_phrase(last_text):
                 stop_reason = "completed"
@@ -92,6 +106,51 @@ def run_loop(
             drv.send_user_message(follow)
             injected += 1
     return events, injected, stop_reason
+
+
+def run_scripted_loop(
+    drv,
+    instructions: list[str],
+    on_event=None,
+) -> tuple[list[dict], int, str]:
+    """Run a fixed sequence of user turns in one persistent subject session.
+
+    Each instruction is sent only after the preceding turn emits a ``result``
+    event.  Unlike :func:`run_loop`, completion phrases in intermediate turns
+    are intentionally ignored: exhausting the supplied instruction sequence is
+    the only successful completion condition.
+
+    Returns ``(events, injected_turns, stop_reason)``.  The first instruction is
+    the activating turn, so ``injected_turns`` counts only later instructions.
+    ``stop_reason`` is ``completed``, ``error``, or ``stream_end``.
+    """
+    if not instructions:
+        raise ValueError("scripted workflow requires at least one instruction")
+    if any(not isinstance(text, str) or not text.strip() for text in instructions):
+        raise ValueError("scripted workflow instructions must be non-empty strings")
+
+    events: list[dict] = []
+    sent_turns = 0
+    for instruction in instructions:
+        drv.send_user_message(instruction)
+        sent_turns += 1
+        saw_result = False
+        for ev in drv.events():
+            events.append(ev)
+            if on_event is not None:
+                on_event(ev)
+            etype = ev.get("type")
+            if etype == "error":
+                return events, max(0, sent_turns - 1), "error"
+            if etype == "result":
+                if is_error_result(ev):
+                    return events, max(0, sent_turns - 1), "error"
+                saw_result = True
+                break
+        if not saw_result:
+            return events, max(0, sent_turns - 1), "stream_end"
+
+    return events, max(0, sent_turns - 1), "completed"
 
 
 def _last_turn_window(events: list[dict]) -> list[dict]:

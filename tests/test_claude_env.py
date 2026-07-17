@@ -59,6 +59,95 @@ def test_build_subject_env_never_sets_config_dir(tmp_path, monkeypatch):
     assert env["ANTHROPIC_BASE_URL"] == "ep"
 
 
+def test_resolve_subject_credentials_prefers_explicit_then_aihubmix_env():
+    env = {
+        "ANTHROPIC_BASE_URL": "https://aihubmix.example",
+        "AIHUBMIX_API_KEY": "aihubmix-key",
+        "ANTHROPIC_AUTH_TOKEN": "older-token",
+        "ANTHROPIC_MODEL": "unrelated-global-model",
+    }
+    resolved = claude_env.resolve_subject_credentials(environ=env)
+    assert resolved.endpoint == "https://aihubmix.example"
+    assert resolved.apikey == "aihubmix-key"
+    assert resolved.model == "claude-opus-4-8"
+
+    explicit = claude_env.resolve_subject_credentials(
+        endpoint="https://explicit.example",
+        apikey="explicit-key",
+        model="explicit-model",
+        environ=env,
+    )
+    assert explicit == claude_env.SubjectCredentials(
+        endpoint="https://explicit.example",
+        apikey="explicit-key",
+        model="explicit-model",
+    )
+
+
+def test_resolve_subject_credentials_accepts_existing_auth_token():
+    resolved = claude_env.resolve_subject_credentials(environ={
+        "ANTHROPIC_BASE_URL": "https://aihubmix.example",
+        "ANTHROPIC_AUTH_TOKEN": "auth-token",
+    })
+    assert resolved.apikey == "auth-token"
+
+
+def test_resolve_subject_credentials_missing_key_does_not_echo_values():
+    with pytest.raises(RuntimeError) as excinfo:
+        claude_env.resolve_subject_credentials(environ={
+            "ANTHROPIC_BASE_URL": "https://private.example/sentinel",
+        })
+    assert "API key" in str(excinfo.value)
+    assert "sentinel" not in str(excinfo.value)
+
+
+def test_resolve_subject_credentials_rejects_key_embedded_in_endpoint():
+    embedded = "endpoint-secret-sentinel"
+    with pytest.raises(RuntimeError) as excinfo:
+        claude_env.resolve_subject_credentials(
+            endpoint=f"https://user:{embedded}@aihubmix.example",
+            apikey="normal-key",
+            environ={},
+        )
+    assert "embedded credentials" in str(excinfo.value)
+    assert embedded not in str(excinfo.value)
+
+
+def test_build_local_subject_env_keeps_host_tools_and_replaces_claude_state(tmp_path):
+    env = claude_env.build_local_subject_env(
+        endpoint="http://127.0.0.1:4321",
+        apikey="new-key",
+        model="claude-opus-4-8",
+        config_dir=tmp_path / "config",
+        base_env={
+            "PATH": "/usr/local/bin:/usr/bin",
+            "HOME": "/Users/test",
+            "LANG": "zh_CN.UTF-8",
+            "ANTHROPIC_API_KEY": "old-key",
+            "ANTHROPIC_BASE_URL": "https://old.example",
+            "CLAUDE_CODE_ENTRYPOINT": "old-session",
+            "CLAUDE_CODE_CONNECT_TIMEOUT_MS": "1",
+            "CLAUDE_CONFIG_DIR": "/old/config",
+            "OPENAI_API_KEY": "unrelated-secret-must-not-leak",
+            "SSH_AUTH_SOCK": "/tmp/ssh-agent.sock",
+            "NO_PROXY": "internal.example",
+        },
+    )
+    assert env["PATH"] == "/usr/local/bin:/usr/bin"
+    assert env["HOME"] == "/Users/test"
+    assert env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:4321"
+    assert env["ANTHROPIC_API_KEY"] == "new-key"
+    assert env["ANTHROPIC_AUTH_TOKEN"] == "new-key"
+    assert env["CLAUDE_CONFIG_DIR"] == str(tmp_path / "config")
+    assert env["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"] == "1"
+    assert env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == "1"
+    assert env["CLAUDE_CODE_CONNECT_TIMEOUT_MS"] == "600000"
+    assert "CLAUDE_CODE_ENTRYPOINT" not in env
+    assert "OPENAI_API_KEY" not in env
+    assert "SSH_AUTH_SOCK" not in env
+    assert "127.0.0.1" in env["NO_PROXY"]
+
+
 def test_build_meta_env_raises_when_no_config(tmp_path, monkeypatch):
     monkeypatch.setattr(claude_env, "CONFIG_DIR", tmp_path)
     monkeypatch.setattr(claude_env, "SETTINGS_FILE", tmp_path / "settings.json")

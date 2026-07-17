@@ -3,7 +3,7 @@
 Uses fake driver + fake user-agent to verify inject-vs-stop decisions without
 a real claude process.
 """
-from trajectory_maker.orchestrator import run_loop
+from trajectory_maker.orchestrator import run_loop, run_scripted_loop
 
 
 class FakeDriver:
@@ -114,3 +114,84 @@ def test_multi_turn_chain():
     assert reason == "completed"
     assert injected == 2
     assert drv.injected == ["跑测试", "贴一下 mocha 行"]
+
+
+def test_scripted_loop_runs_all_turns_even_when_intermediate_turns_claim_completion():
+    drv = FakeDriver([
+        [_assistant("第一阶段已完成"), _result()],
+        [_assistant("第二阶段也完成了"), _result()],
+        [_assistant("全部完成"), _result()],
+    ])
+    seen = []
+
+    events, injected, reason = run_scripted_loop(
+        drv,
+        ["第一条指令", "第二条指令", "第三条指令"],
+        on_event=seen.append,
+    )
+
+    assert reason == "completed"
+    assert injected == 2
+    assert drv.injected == ["第一条指令", "第二条指令", "第三条指令"]
+    assert events == seen
+    assert [event["type"] for event in events] == [
+        "assistant", "result", "assistant", "result", "assistant", "result"
+    ]
+
+
+def test_scripted_loop_stops_on_error_without_sending_remaining_turns():
+    drv = FakeDriver([
+        [_assistant("第一阶段"), _result()],
+        [{"type": "error", "error": {"type": "api_error"}}],
+        [_assistant("不应执行"), _result()],
+    ])
+
+    _events, injected, reason = run_scripted_loop(
+        drv, ["第一条", "第二条", "第三条"]
+    )
+
+    assert reason == "error"
+    assert injected == 1
+    assert drv.injected == ["第一条", "第二条"]
+
+
+def test_scripted_loop_stops_on_error_result_envelope():
+    drv = FakeDriver([
+        [_assistant("第一阶段"), _result()],
+        [{
+            "type": "result",
+            "subtype": "error_during_execution",
+            "is_error": True,
+            "result": "tool failed",
+        }],
+        [_assistant("不应执行"), _result()],
+    ])
+
+    _events, injected, reason = run_scripted_loop(
+        drv, ["第一条", "第二条", "第三条"]
+    )
+
+    assert reason == "error"
+    assert injected == 1
+    assert drv.injected == ["第一条", "第二条"]
+
+
+def test_scripted_loop_reports_stream_end_before_all_turns():
+    drv = FakeDriver([[_assistant("进程提前结束")]])
+
+    _events, injected, reason = run_scripted_loop(drv, ["第一条", "第二条"])
+
+    assert reason == "stream_end"
+    assert injected == 0
+    assert drv.injected == ["第一条"]
+
+
+def test_scripted_loop_rejects_empty_instruction_list():
+    drv = FakeDriver([])
+
+    try:
+        run_scripted_loop(drv, [])
+    except ValueError as exc:
+        assert "at least one" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")

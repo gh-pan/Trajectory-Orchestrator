@@ -52,6 +52,27 @@ def test_tmp_clone_path_normalized(rules):
     assert "/workspace/repo" in out["message"]["content"][0]["text"]
 
 
+def test_per_run_secret_and_local_workspace_path_are_normalized():
+    secret = "custom-aihubmix-token-format"
+    local_workspace = "/private/tmp/tm-local-abc/subject_workspace"
+    dynamic = load_rules(
+        secret_values=[secret],
+        path_mappings={local_workspace: "/workspace"},
+    )
+    event = {
+        "type": "assistant",
+        "message": {"content": [{
+            "type": "text",
+            "text": f"read {local_workspace}/input.csv with {secret}",
+        }]},
+    }
+    clean = sanitize_event(event, dynamic)
+    text = json.dumps(clean)
+    assert secret not in text
+    assert local_workspace not in text
+    assert "/workspace/input.csv" in text
+
+
 def test_metadata_session_id_removed(rules):
     ev = {"type": "system", "subtype": "init", "session_id": "s1", "cwd": "/Users/larr/x", "version": "2.1.175", "hostname": "h"}
     out = sanitize_event(ev, rules)
