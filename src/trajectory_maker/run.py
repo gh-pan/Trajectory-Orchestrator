@@ -3,7 +3,7 @@ via a recording proxy, drive the subject with a resident user-agent, grade,
 package, destroy.
 
 Spec 09: single-turn event capture -> multi-turn injection + HTTP-intercepted
-API-call capture producing req_<uuid>.json (aligned with the golden sample).
+API-call capture producing ordered req_<sequence>_<uuid>.json records.
 """
 
 import json

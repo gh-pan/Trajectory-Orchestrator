@@ -163,7 +163,7 @@ def test_package_multiturn_preserves_req_trajectory_format(tmp_path):
         "metadata.yaml", "final_score.json", "initial_env", "expected_final_env",
         "actual_final_env", "rubrics", "session-1", "events.jsonl",
     }
-    record = json.loads((out_dir / "session-1" / "req_test.json").read_text())
+    record = json.loads((out_dir / "session-1" / "req_001_test.json").read_text())
     assert set(record) == {
         "session_id", "request_id", "timestamp", "thinking_effort", "is_garbled",
         "request", "response",

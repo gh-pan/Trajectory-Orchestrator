@@ -1,4 +1,4 @@
-"""Convert raw API call pairs (claude-trace RawPair) into spec req_*.json files.
+"""Convert raw API call pairs into ordered spec req_*.json files.
 
 Two-step transform (spec 09):
   1. Lift request.body.* up one level -> request.* (drop url/headers/method).
@@ -189,19 +189,50 @@ def convert_pair(raw: dict, session_id: str) -> dict:
 
 
 def convert_dir(raw_calls_dir: Path, out_dir: Path, session_id: str) -> int:
-    """Convert every RawPair file in raw_calls_dir into <request_id>.json in out_dir.
+    """Convert RawPairs into chronologically numbered JSON files.
+
+    Output names use ``req_<sequence>_<request-id-suffix>.json``.  The sequence
+    follows the original request timestamp, while the record's internal
+    ``request_id`` remains unchanged.  Equal or unparseable timestamps retain
+    their deterministic source-file/line order.
 
     Each raw file holds one RawPair per line. Returns the number converted.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
-    n = 0
+    pending: list[tuple[tuple, dict]] = []
+    ordinal = 0
     for f in sorted(raw_calls_dir.glob("*.jsonl")):
         for line in f.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
-            rec = convert_pair(json.loads(line), session_id)
-            (out_dir / f"{rec['request_id']}.json").write_text(
-                json.dumps(rec, ensure_ascii=False), encoding="utf-8"
-            )
-            n += 1
-    return n
+            raw = json.loads(line)
+            rec = convert_pair(raw, session_id)
+            pending.append((_request_timestamp_sort_key(raw, ordinal), rec))
+            ordinal += 1
+
+    pending.sort(key=lambda item: item[0])
+    for sequence, (_sort_key, rec) in enumerate(pending, start=1):
+        request_id = str(rec["request_id"])
+        suffix = request_id[4:] if request_id.startswith("req_") else request_id
+        filename = f"req_{sequence:03d}_{suffix}.json"
+        (out_dir / filename).write_text(
+            json.dumps(rec, ensure_ascii=False), encoding="utf-8"
+        )
+    return len(pending)
+
+
+def _request_timestamp_sort_key(raw: dict, ordinal: int) -> tuple:
+    """Return a total ordering for a RawPair request timestamp."""
+    request = raw.get("request") if isinstance(raw.get("request"), dict) else {}
+    timestamp = request.get("timestamp")
+    if isinstance(timestamp, (int, float)):
+        return (0, float(timestamp), "", ordinal)
+    if isinstance(timestamp, str):
+        try:
+            parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return (0, parsed.timestamp(), "", ordinal)
+        except (ValueError, OverflowError):
+            return (1, 0.0, "", ordinal)
+    return (2, 0.0, "", ordinal)

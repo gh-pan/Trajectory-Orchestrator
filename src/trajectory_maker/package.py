@@ -204,7 +204,8 @@ def package_run_multiturn(
     _write_expected_env(out_dir, task_dir, task_spec)
     _write_rubrics(out_dir, task_dir, task_spec)
 
-    # API-call-level trajectory: convert raw_calls -> req_<uuid>.json under <session_id>/
+    # API-call-level trajectory: convert raw_calls into chronologically numbered
+    # req_<sequence>_<uuid>.json files under <session_id>/.
     raw_calls = work_dir / "raw_calls"
     req_dir = out_dir / session_id
     rules = load_rules(secret_values=secret_values, path_mappings=path_mappings)

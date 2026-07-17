@@ -246,9 +246,47 @@ def test_convert_dir_writes_one_json_per_raw(tmp_path):
     out_dir = tmp_path / "out"
     n = convert_dir(raw_dir, out_dir, "sess-9")
     assert n == 1
-    out = json.loads((out_dir / "req_xyz.json").read_text())
+    out = json.loads((out_dir / "req_001_xyz.json").read_text())
     assert out["session_id"] == "sess-9"
     assert out["request_id"] == "req_xyz"
     assert out["thinking_effort"] == "high"
     assert out["is_garbled"] is False
     assert out["response"]["response_data"]["stop_reason"] == "end_turn"
+
+
+def test_convert_dir_numbers_files_in_request_timestamp_order(tmp_path):
+    raw_dir = tmp_path / "raw_calls"
+    raw_dir.mkdir()
+    events = _sse([
+        {"type": "message_start", "message": {
+            "id": "msg_1", "model": "m", "type": "message", "role": "assistant",
+            "content": [], "usage": {"input_tokens": 1},
+        }},
+        {"type": "message_delta", "delta": {"stop_reason": "end_turn"},
+         "usage": {"output_tokens": 1}},
+        {"type": "message_stop"},
+    ])
+    calls = [
+        ("a.jsonl", "req_late", "2026-07-18T12:00:02Z"),
+        ("b.jsonl", "req_early", "2026-07-18T12:00:00Z"),
+        ("c.jsonl", "req_middle", "2026-07-18T12:00:01Z"),
+    ]
+    for filename, request_id, timestamp in calls:
+        raw = {
+            "request": {"timestamp": timestamp, "body": {"model": "m"}},
+            "response": {"body_raw": events},
+            "request_id": request_id,
+        }
+        (raw_dir / filename).write_text(json.dumps(raw) + "\n")
+
+    out_dir = tmp_path / "out"
+    assert convert_dir(raw_dir, out_dir, "session") == 3
+    assert [path.name for path in sorted(out_dir.iterdir())] == [
+        "req_001_early.json",
+        "req_002_middle.json",
+        "req_003_late.json",
+    ]
+    assert [
+        json.loads(path.read_text())["request_id"]
+        for path in sorted(out_dir.iterdir())
+    ] == ["req_early", "req_middle", "req_late"]

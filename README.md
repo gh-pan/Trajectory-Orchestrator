@@ -42,15 +42,16 @@ trajectory-maker clean --task <task_id>
 每个元素使用 `TaskSpec` 结构；其中的 `initial_instruction` 会按数组顺序逐轮注入。
 所有轮次必须声明同一个 workspace 和 Docker 环境。若 case 中没有声明的 Dockerfile，
 命令会在临时构建副本中生成默认 Dockerfile，不会修改原始 workspace。最终仍输出
-现有的 `<session_id>/req_<uuid>.json`、`events.jsonl`、环境快照和评分文件。
+现有的 `<session_id>/req_<序号>_<uuid>.json`、`events.jsonl`、环境快照和评分文件。
 
 `--runtime local` 不需要 Docker：它调用 PATH 中的本机 `claude`，在 workspace 的临时
 副本中依次执行所有轮次，并继续通过本地录制代理生成相同格式的 trajectory。默认模型
 固定为 `claude-opus-4-8`。凭证按“命令行参数 → `TM_SUBJECT_*` →
 `AIHUBMIX_API_KEY` → `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY`”读取，只进入子进程
 环境，不写入代码或输出；推荐使用环境变量，避免 key 出现在 shell 历史中。本地进程使用
-`--bare`、禁用会话落盘并开启 Claude Bash sandbox，但隔离强度仍低于 Docker，只应运行
-可信的 case。当前本地模式支持无 rubric 的 workflow；带 rubric 的任务请继续使用 Docker。
+隔离的临时 Claude 配置、保留完整 system prompt、禁用会话落盘并开启 Claude Bash sandbox，
+但隔离强度仍低于 Docker，只应运行可信的 case。当前本地模式支持无 rubric 的 workflow；
+带 rubric 的任务请继续使用 Docker。
 为避免在宿主机裸执行任意初始化脚本，本地模式同样会拒绝声明了 `init_script` 的 workflow。
 
 ## run 阶段：多轮注入 + API 调用层采集
@@ -59,7 +60,7 @@ run 阶段做三件事（详见 `docs/superpowers/specs/trajectory-maker/09-mult
 
 1. **HTTP 拦截采集**：本地 plain-HTTP 录制代理拦截被测 claude 的每次 `/v1/messages`
    调用，落 `request body` + `SSE response body_raw`；再两步转换（提升 body + 解码 SSE）
-   为 `req_<uuid>.json`，结构与采集规格一致（`request.*` = API body，
+   按请求时间排序为 `req_<三位序号>_<uuid>.json`，结构与采集规格一致（`request.*` = API body，
    `response.response_data` = 完整 message，顶层 `session_id/request_id/timestamp/
    thinking_effort/is_garbled`）。
 2. **多轮 user-agent 注入**：一个常驻的、skill 激活的 user-agent，在被测 agent 每次
@@ -83,7 +84,7 @@ dataset/<task_id>/<run_id>/
 ├── actual_final_env/      # agent 跑完的终末环境快照
 ├── rubrics/               # 评分脚本/清单
 ├── <session_id>/          # API 调用层轨迹
-│   ├── req_<uuid>.json    #   每次调用一个文件（提升后的 request + 解码的 response）
+│   ├── req_001_<uuid>.json #  每次调用一个文件，按请求时间连续编号
 │   └── ...
 └── events.jsonl           # 原始 stream-json 事件流（审计用）
 dataset/index.jsonl        # 全局索引
